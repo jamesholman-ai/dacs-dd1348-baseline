@@ -1,0 +1,99 @@
+# DACS DD1348 Baseline Scanner
+
+Standalone Playwright CLI that mirrors the EFTS Katalon **DACS Original DD1348 IRRD** baseline:
+
+1. Load shipment identifiers from Jeff’s spreadsheet (or txt/csv)
+2. EFTS **Research → List Search** upload + Search
+3. Open each **Shipment Identifier** Details tab (pings DACS)
+4. Record whether Document Center `#originalDD1348irrd` returns a document vs **Unavailable**
+5. Re-run with the same inputs after the query deploy and **compare** hit rates
+
+Built for **gov-cloud Windows VMs with CAC**: uses installed **Chrome** + a persistent profile so Windows client certs work. You complete the PIN/cert prompt once per session.
+
+## Setup (on the VM)
+
+```powershell
+cd c:\Users\james.holman\git\dacs-dd1348-baseline
+python -m venv .venv
+.\.venv\Scripts\Activate.ps1
+pip install -r requirements.txt
+# Playwright needs Chrome channel only — no browser download required when using --channel chrome
+```
+
+Optional config:
+
+```powershell
+Copy-Item config.example.yaml config.yaml
+# edit efts_url / throttle defaults
+```
+
+## Throttle (user choice)
+
+| Flag | Meaning |
+|------|---------|
+| `--delay-seconds N` | Pause after every Details open (default 2) |
+| `--batch-size N` | After every N opens, take a longer pause (`0` = off) |
+| `--batch-pause-seconds N` | Length of that batch pause (default 30) |
+
+Example gentle pacing for ~500 IDs:
+
+```powershell
+python -m dacs_baseline scan --label before `
+  --delay-seconds 3 --batch-size 50 --batch-pause-seconds 60
+```
+
+## Commands
+
+### Extract IDs from the spreadsheet
+
+```powershell
+python -m dacs_baseline prep-ids `
+  --input "c:\Users\james.holman\Downloads\Copy of QAReqsThatExistInDACS.xlsx"
+```
+
+That workbook is ~463 unique **RQSTN** identifiers (column *Shipment Identifier*). List Search mode defaults to **document** when Identifier Type is RQSTN or IDs end with `*`.
+
+### Baseline (before deploy)
+
+```powershell
+python -m dacs_baseline scan --label before `
+  --input "c:\Users\james.holman\Downloads\Copy of QAReqsThatExistInDACS.xlsx" `
+  --efts-url https://test.scip.dsca.mil/NewEftsWeb/ `
+  --delay-seconds 2 --batch-size 25 --batch-pause-seconds 45
+```
+
+Chrome opens → complete CAC → scanner runs. Outputs under `reports/`:
+
+- `dacs-dd1348-scan-results_before.csv`
+- `dacs-dd1348-baseline-hits_before.csv`
+- `dacs-dd1348-unavailable_before.csv`
+
+### After deploy (identical process)
+
+```powershell
+python -m dacs_baseline scan --label after `
+  --input "c:\Users\james.holman\Downloads\Copy of QAReqsThatExistInDACS.xlsx" `
+  --delay-seconds 2 --batch-size 25 --batch-pause-seconds 45
+```
+
+### Compare hit rates
+
+```powershell
+python -m dacs_baseline compare `
+  --before reports\dacs-dd1348-scan-results_before.csv `
+  --after reports\dacs-dd1348-scan-results_after.csv
+```
+
+## Smoke test a few IDs first
+
+```powershell
+python -m dacs_baseline scan --label smoke --max 5 --delay-seconds 2
+```
+
+## Notes
+
+- Selectors / flow ported from `Navsup.Wss.Efts.WebApps.Primary.Katalon` (`DacsDd1348BaselineWorkflow`, `EftsListSearchPage`).
+- Hit = IRRD download link present (`AVAILABLE_PDF_OK` or `AVAILABLE_PDF_OPENED_NO_TEXT`).
+- Miss = `UNAVAILABLE`.
+- `--search-by tcn|document|requisition|auto` overrides List Search radio.
+- `--start-index` / `--max` slice the list for resume or sampling.

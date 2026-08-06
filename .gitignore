@@ -1,0 +1,14 @@
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+.env
+config.yaml
+reports/
+data/*.xlsx
+data/*.xls
+*.log
+.playwright/
+user-data/
+.DS_Store
+Thumbs.db

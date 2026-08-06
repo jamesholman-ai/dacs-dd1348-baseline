@@ -1,0 +1,11 @@
+# Copy to config.yaml and adjust for your VM.
+efts_url: https://test.scip.dsca.mil/NewEftsWeb/
+# Optional: Chrome user-data dir so CAC session persists across runs
+user_data_dir: ./user-data
+headless: false
+# Throttle defaults (override on CLI)
+delay_seconds: 2.0
+batch_size: 0          # 0 = no batch pause
+batch_pause_seconds: 30
+list_search_wait_seconds: 900
+search_by: auto        # auto | tcn | document | requisition
