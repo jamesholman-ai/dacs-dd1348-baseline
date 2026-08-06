@@ -77,10 +77,13 @@ def scan_one(
                     list_page,
                 )
 
-        # Continue work on the Details tab
+        # Continue work on the Details tab that just opened
         details.bring_to_front()
-        details.wait_for_load_state("domcontentloaded", timeout=300_000)
-        details.wait_for_timeout(500)
+        try:
+            details.wait_for_load_state("domcontentloaded", timeout=300_000)
+        except Exception:
+            pass
+        details.wait_for_timeout(800)
 
         if efts.is_efts_error_page(details):
             url = details.url or ""
@@ -91,8 +94,25 @@ def scan_one(
             )
 
         details_url = details.url or ""
-        irrd = efts.wait_for_irrd_ready(details, timeout_ms=90_000)
-        ui_label = (irrd.get("label") or irrd.get("detail") or "").strip()
+        try:
+            efts.ensure_details_ready(details, timeout_ms=90_000)
+        except Exception as exc:
+            list_page = _finish_details(context, list_page, details, same_tab, efts_base)
+            return (
+                ScanResult(
+                    identifier,
+                    "error",
+                    f"DETAILS_NOT_READY: {_csv_safe(exc)}",
+                    details_url,
+                    "unknown",
+                    "",
+                ),
+                list_page,
+            )
+
+        irrd = efts.wait_for_irrd_ready(details, timeout_ms=60_000)
+        ui_label = (irrd.get("label") or "").strip()
+        detail = (irrd.get("detail") or "").strip()
 
         if irrd["state"] == "unavailable":
             list_page = _finish_details(context, list_page, details, same_tab, efts_base)
@@ -127,7 +147,7 @@ def scan_one(
             ScanResult(
                 identifier,
                 "error",
-                f"IRRD_UNCLEAR: {_csv_safe(irrd.get('detail'))}",
+                f"IRRD_UNCLEAR: {_csv_safe(detail or ui_label)}",
                 details_url,
                 "unknown",
                 ui_label,
@@ -282,7 +302,7 @@ def run_baseline(
                 print(
                     f"[scan] {scanned}/{expected} {row.identifier} "
                     f"dd1348={row.has_original_dd1348} ui='{row.ui_label}' "
-                    f"status={row.status}"
+                    f"status={row.status} detail={_csv_safe(row.detail)[:120]}"
                 )
                 throttle.after_item(scanned)
 

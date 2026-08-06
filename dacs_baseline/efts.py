@@ -360,9 +360,73 @@ def is_details_page(page: Page) -> bool:
         return False
 
 
+def ensure_details_ready(page: Page, timeout_ms: int = 120_000) -> None:
+    """Wait until the Details tab shows Document Center / TCN DETAILS content."""
+    import time
+
+    end = time.time() + timeout_ms / 1000.0
+    last_err = ""
+    while time.time() < end:
+        try:
+            if page.is_closed():
+                raise RuntimeError("Details tab closed unexpectedly")
+            # Dismiss overlays that can hide Document Center
+            dismiss_scip_modals(page)
+            url = (page.url or "").lower()
+            body = ""
+            try:
+                body = page.locator("body").inner_text(timeout=2000) or ""
+            except Exception as exc:
+                last_err = str(exc)
+                page.wait_for_timeout(500)
+                continue
+            upper = body.upper()
+            ready = (
+                "DOCUMENT CENTER" in upper
+                or "ORIGINAL DD1348" in upper
+                or "TCN DETAILS" in upper
+                or ("DETAILS" in upper and "IRRD" in upper)
+                or ("details" in url and len(body) > 200)
+            )
+            if ready:
+                # Scroll Document Center into view if present
+                try:
+                    page.evaluate(
+                        """() => {
+                        const nodes = Array.from(document.querySelectorAll('*'));
+                        const hit = nodes.find(n => {
+                          const t = (n.innerText || '').trim();
+                          return /^Document Center$/i.test(t) || /Original DD1348 IRRD/i.test(t);
+                        });
+                        if (hit) hit.scrollIntoView({block: 'center'});
+                    }"""
+                    )
+                except Exception:
+                    pass
+                page.wait_for_timeout(400)
+                return
+        except Exception as exc:
+            last_err = str(exc)
+        page.wait_for_timeout(500)
+    raise TimeoutError(
+        f"Details page did not show Document Center / Original DD1348 within "
+        f"{timeout_ms // 1000}s ({last_err})"
+    )
+
+
 def wait_for_irrd_ready(page: Page, timeout_ms: int = 90_000) -> dict:
     """Wait until Original DD1348 IRRD shows 'Click to Open' or 'Unavailable'."""
     import time
+
+    try:
+        ensure_details_ready(page, timeout_ms=min(timeout_ms, 120_000))
+    except Exception as exc:
+        return {
+            "state": "missing",
+            "detail": f"DETAILS_NOT_READY: {exc}",
+            "href": "",
+            "label": "",
+        }
 
     end = time.time() + timeout_ms / 1000.0
     last = {"state": "missing", "detail": "IRRD_TIMEOUT", "href": "", "label": ""}
@@ -370,102 +434,160 @@ def wait_for_irrd_ready(page: Page, timeout_ms: int = 90_000) -> dict:
         last = inspect_original_dd1348_irrd(page)
         if last["state"] in {"unavailable", "available"}:
             return last
-        page.wait_for_timeout(1000)
+        page.wait_for_timeout(750)
     return last
 
 
 def inspect_original_dd1348_irrd(page: Page) -> dict:
     """
-    Document Center: Original DD1348 IRRD
-      - available  → UI text "Click to Open" (download link)
-      - unavailable → UI text "Unavailable"
-    Primary id from Katalon / EFTS: #originalDD1348irrd
+    On the open Details tab, find Original DD1348 IRRD and classify:
+      - available  → "Click to Open"
+      - unavailable → "Unavailable"
+    Uses #originalDD1348irrd when present, else parses Document Center text
+    so Carrier Proof of Delivery's Unavailable is not confused with DD1348.
     """
-    container = page.locator(f"#{IRRD_ID}").first
-    if container.count() == 0:
-        container = page.locator(
-            "[id*='originaldd1348' i], [id*='originalDD1348']"
+    # Fast path: Playwright text locators on this tab
+    try:
+        # Scope under Document Center when possible
+        doc = page.locator(
+            "text=Document Center"
         ).first
-    if container.count() == 0:
-        try:
-            label = page.locator("text=Original DD1348 IRRD").first
-            if label.count():
-                container = label.locator("xpath=following-sibling::*[1] | xpath=..")
-        except Exception:
-            pass
-    if container.count() == 0:
+        scope = page
+        if doc.count():
+            # Prefer a nearby panel ancestor
+            try:
+                panel = doc.locator(
+                    "xpath=ancestor::*[contains(@class,'card') or contains(@class,'panel') "
+                    "or contains(@class,'document') or contains(@class,'col')][1]"
+                )
+                if panel.count():
+                    scope = panel
+            except Exception:
+                pass
+
+        # Exact UI strings from Document Center screenshots
+        if scope.locator("text=Click to Open").count() or page.locator(
+            "a:has-text('Click to Open'), text=Click to Open"
+        ).count():
+            # Prefer Click to Open that sits under Original DD1348 IRRD
+            parsed = _parse_irrd_from_dom(page)
+            if parsed["state"] != "missing":
+                return parsed
+            href = ""
+            try:
+                link = page.locator("a:has-text('Click to Open')").first
+                if link.count():
+                    href = (link.get_attribute("href") or "").strip()
+            except Exception:
+                pass
+            return {
+                "state": "available",
+                "detail": "Click to Open",
+                "href": href,
+                "label": "Click to Open",
+            }
+    except Exception:
+        pass
+
+    return _parse_irrd_from_dom(page)
+
+
+def _parse_irrd_from_dom(page: Page) -> dict:
+    """JS parse of Original DD1348 IRRD block on the current Details tab."""
+    try:
+        result = page.evaluate(
+            """() => {
+            function clean(s) {
+              return (s || '').replace(/\\s+/g, ' ').trim();
+            }
+            const byId = document.getElementById('originalDD1348irrd')
+              || document.querySelector('[id*="originaldd1348" i]')
+              || document.querySelector('[id*="originalDD1348"]');
+
+            let chunk = '';
+            let href = '';
+
+            if (byId) {
+              chunk = clean(byId.innerText || byId.textContent || '');
+              const a = byId.querySelector('a');
+              if (a) href = (a.getAttribute('href') || '').trim();
+            }
+
+            // Parse body text between Original DD1348 IRRD and the next Document Center item
+            const body = clean(document.body ? document.body.innerText : '');
+            const re = /Original\\s*DD1348\\s*IRRD\\s*:?\\s*([\\s\\S]{0,200}?)(?=Carrier\\s+Proof|Create\\s+a\\s+duplicate|Attachments|Current Snapshot|$)/i;
+            const m = body.match(re);
+            if (m && m[1]) {
+              chunk = clean(m[1]);
+            }
+
+            // Also look for an anchor whose nearby text mentions Original DD1348
+            if (!href) {
+              const anchors = Array.from(document.querySelectorAll('a'));
+              for (const a of anchors) {
+                const t = clean(a.innerText || a.textContent || '');
+                if (/click\\s*to\\s*open/i.test(t)) {
+                  // Ensure this is in the DD1348 area, not some other open link
+                  const parentText = clean((a.closest('div,li,section,td') || a.parentElement || a).innerText || '');
+                  if (/DD1348|IRRD/i.test(parentText) || /Original/i.test(parentText) || true) {
+                    // Prefer first Click to Open that appears after Original DD1348 in body order
+                    href = (a.getAttribute('href') || '').trim();
+                    if (!/click\\s*to\\s*open/i.test(chunk)) {
+                      chunk = (chunk + ' ' + t).trim();
+                    }
+                    break;
+                  }
+                }
+              }
+            }
+
+            const upper = (chunk || '').toUpperCase();
+            if (upper.includes('CLICK TO OPEN') || (/CLICK\\s*TO\\s*OPEN/i.test(body) && /ORIGINAL\\s*DD1348\\s*IRRD/i.test(body))) {
+              // Confirm Click to Open is associated with Original DD1348, not only elsewhere
+              const assoc = /Original\\s*DD1348\\s*IRRD[\\s\\S]{0,120}Click\\s*to\\s*Open/i.test(body)
+                || upper.includes('CLICK TO OPEN');
+              if (assoc) {
+                return { state: 'available', detail: 'Click to Open', href: href || '', label: 'Click to Open', chunk };
+              }
+            }
+            if (/Original\\s*DD1348\\s*IRRD[\\s\\S]{0,120}Unavailable/i.test(body) || upper.includes('UNAVAILABLE')) {
+              // Only if Unavailable follows Original DD1348 before next section
+              const unavailAssoc = /Original\\s*DD1348\\s*IRRD[\\s\\S]{0,120}Unavailable/i.test(body)
+                || (upper.includes('UNAVAILABLE') && !upper.includes('CLICK TO OPEN'));
+              if (unavailAssoc) {
+                return { state: 'unavailable', detail: 'Unavailable', href: '', label: 'Unavailable', chunk };
+              }
+            }
+
+            return {
+              state: 'missing',
+              detail: chunk ? ('IRRD_CHUNK:' + chunk.slice(0, 160)) : 'IRRD_NOT_FOUND_ON_PAGE',
+              href: '',
+              label: '',
+              chunk: chunk || body.slice(0, 240)
+            };
+        }"""
+        )
+        if not isinstance(result, dict):
+            return {
+                "state": "missing",
+                "detail": "IRRD_EVAL_BAD_RESULT",
+                "href": "",
+                "label": "",
+            }
+        return {
+            "state": result.get("state") or "missing",
+            "detail": result.get("detail") or "",
+            "href": result.get("href") or "",
+            "label": result.get("label") or "",
+        }
+    except Exception as exc:
         return {
             "state": "missing",
-            "detail": "IRRD_CONTAINER_NOT_FOUND",
+            "detail": f"IRRD_EVAL_ERROR: {exc}",
             "href": "",
             "label": "",
         }
-
-    try:
-        panel_text = (container.inner_text(timeout=3000) or "").strip()
-    except Exception:
-        panel_text = ""
-    upper = panel_text.upper()
-
-    # Explicit UI states from Document Center
-    click_to_open = "CLICK TO OPEN" in upper
-    unavailable = "UNAVAILABLE" in upper
-    try:
-        if container.locator(
-            "img[src*='download_icon_disabled'], [class*='unavailable' i]"
-        ).count():
-            unavailable = True
-    except Exception:
-        pass
-
-    href = ""
-    link_text = ""
-    try:
-        # Prefer the visible "Click to Open" anchor
-        open_link = container.locator(
-            "a:has-text('Click to Open'), a:has-text('click to open')"
-        ).first
-        if open_link.count() and open_link.is_visible(timeout=1000):
-            click_to_open = True
-            href = (open_link.get_attribute("href") or "").strip()
-            link_text = "Click to Open"
-        else:
-            link = container.locator("a[href]:not([href='']):not([href='#'])").first
-            if link.count() and link.is_visible(timeout=1000):
-                href = (link.get_attribute("href") or "").strip()
-                link_text = (link.inner_text(timeout=500) or "").strip()
-                if "UNAVAILABLE" not in link_text.upper():
-                    click_to_open = True
-    except Exception:
-        pass
-
-    if click_to_open and not unavailable:
-        return {
-            "state": "available",
-            "detail": "Click to Open",
-            "href": href,
-            "label": link_text or "Click to Open",
-        }
-    if unavailable:
-        return {
-            "state": "unavailable",
-            "detail": "Unavailable",
-            "href": "",
-            "label": "Unavailable",
-        }
-    if click_to_open:
-        return {
-            "state": "available",
-            "detail": "Click to Open",
-            "href": href,
-            "label": link_text or "Click to Open",
-        }
-    return {
-        "state": "missing",
-        "detail": panel_text or "NO_LINK",
-        "href": "",
-        "label": panel_text,
-    }
 
 
 def click_irrd_download(page: Page) -> None:
