@@ -9,7 +9,6 @@ from pathlib import Path
 from playwright.sync_api import BrowserContext, Page
 
 from . import efts
-from .input_path import input_dir
 from .spreadsheet import ShipmentRow, write_upload_txt
 from .throttle import Throttle
 
@@ -196,8 +195,9 @@ def run_baseline(
     report_dir = out_dir / label if out_dir.name != label else out_dir
     report_dir.mkdir(parents=True, exist_ok=True)
     ids = [r.identifier for r in rows]
-    upload = write_upload_txt(ids, input_dir() / "identifiers.txt")
-    write_upload_txt(ids, report_dir / "list-search-upload.txt")
+    # Never overwrite input/identifiers.txt — --max / slices must not shrink the source list.
+    # Upload copy lives only under the report folder for this run.
+    upload = write_upload_txt(ids, report_dir / "list-search-upload.txt")
 
     efts.open_list_search(list_page, efts_base)
     efts.upload_or_paste_ids(list_page, upload, ids)

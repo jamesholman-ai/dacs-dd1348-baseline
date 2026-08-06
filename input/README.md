@@ -1,7 +1,8 @@
 # Input files
 
-Drop Jeff’s spreadsheet here, then run `python -m dacs_baseline prep-ids` to
-refresh `identifiers.txt`. Scans prefer the **txt** for List Search upload.
+Scans prefer `identifiers.txt` for List Search. Smoke runs (`--max N`) upload a
+**copy** under `reports/dd1348-irrd/<label>/list-search-upload.txt` and do **not**
+overwrite this file.
 
 ## List Search flow
 
