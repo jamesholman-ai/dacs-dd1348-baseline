@@ -18,6 +18,8 @@ from .throttle import Throttle
 
 
 DEFAULT_EFTS = "https://test.scip.dsca.mil/NewEftsWeb/"
+# Gov-cloud / CAC paths can be slow; Playwright default is 30s.
+DEFAULT_NAV_TIMEOUT_MS = 300_000  # 5 minutes
 
 
 def _load_config(path: Path | None) -> dict:
@@ -117,6 +119,12 @@ def build_parser() -> argparse.ArgumentParser:
         help="How long to wait for operator CAC PIN / cert selection",
     )
     scan.add_argument(
+        "--navigation-timeout-seconds",
+        type=int,
+        default=None,
+        help="Playwright page/navigation timeout (default: 300 = 5 minutes)",
+    )
+    scan.add_argument(
         "--headed",
         action="store_true",
         default=True,
@@ -197,6 +205,13 @@ def cmd_scan(args: argparse.Namespace, cfg: dict) -> int:
         if args.list_search_wait_seconds is not None
         else int(cfg.get("list_search_wait_seconds", 900))
     )
+    nav_timeout_ms = int(
+        (
+            args.navigation_timeout_seconds
+            if args.navigation_timeout_seconds is not None
+            else cfg.get("navigation_timeout_seconds", DEFAULT_NAV_TIMEOUT_MS // 1000)
+        )
+    ) * 1000
 
     rows = load_identifiers(src, unique=True)
     if args.start_index:
@@ -233,7 +248,14 @@ def cmd_scan(args: argparse.Namespace, cfg: dict) -> int:
             ],
         )
         page = context.pages[0] if context.pages else context.new_page()
-        page.goto(efts_url, wait_until="domcontentloaded")
+        context.set_default_timeout(nav_timeout_ms)
+        context.set_default_navigation_timeout(nav_timeout_ms)
+        print(f"Navigation timeout: {nav_timeout_ms // 1000}s")
+        page.goto(
+            efts_url,
+            wait_until="domcontentloaded",
+            timeout=nav_timeout_ms,
+        )
         dismiss_scip_modals(page)
         click_cac_if_present(page)
         wait_for_efts_ready(page, timeout_ms=args.cac_timeout_seconds * 1000)

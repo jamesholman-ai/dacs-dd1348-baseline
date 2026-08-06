@@ -7,6 +7,7 @@ from playwright.sync_api import BrowserContext, Page
 
 
 IRRD_ID = "originalDD1348irrd"
+DEFAULT_NAV_TIMEOUT_MS = 300_000  # 5 minutes — gov-cloud lag
 
 
 def dismiss_scip_modals(page: Page) -> None:
@@ -102,13 +103,17 @@ def open_list_search(page: Page, efts_base: str) -> None:
     try:
         if link.count() and link.is_visible(timeout=3000):
             link.click()
-            page.wait_for_load_state("domcontentloaded")
+            page.wait_for_load_state("domcontentloaded", timeout=DEFAULT_NAV_TIMEOUT_MS)
             dismiss_scip_modals(page)
             return
     except Exception:
         pass
     base = efts_base if efts_base.endswith("/") else efts_base + "/"
-    page.goto(base + "ListSearch", wait_until="domcontentloaded")
+    page.goto(
+        base + "ListSearch",
+        wait_until="domcontentloaded",
+        timeout=DEFAULT_NAV_TIMEOUT_MS,
+    )
     dismiss_scip_modals(page)
 
 

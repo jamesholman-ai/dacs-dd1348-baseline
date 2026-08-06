@@ -30,11 +30,11 @@ def scan_one(list_page: Page, context: BrowserContext, identifier: str) -> ScanR
     efts.close_extra_pages(context, list_page)
     before = set(context.pages)
     efts.click_shipment_identifier(list_page, identifier)
-    details = _wait_new_page(context, before, timeout_ms=30_000)
+    details = _wait_new_page(context, before, timeout_ms=300_000)
     if details is None:
         return ScanResult(identifier, "error", "Details tab did not open", "", "")
 
-    details.wait_for_load_state("domcontentloaded")
+    details.wait_for_load_state("domcontentloaded", timeout=300_000)
     details.wait_for_timeout(800)
 
     if efts.is_efts_error_page(details):
@@ -117,7 +117,7 @@ def _wait_new_page(
         for p in context.pages:
             if p not in before and not p.is_closed():
                 try:
-                    p.wait_for_load_state("domcontentloaded", timeout=10_000)
+                    p.wait_for_load_state("domcontentloaded", timeout=300_000)
                 except Exception:
                     pass
                 return p
