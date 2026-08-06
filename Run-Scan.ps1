@@ -1,12 +1,14 @@
 # Fast helpers for the gov-cloud VM. Edit throttle flags as needed.
 
 param(
-  [ValidateSet('before','after','smoke')]
-  [string]$Label = 'before',
+  [ValidateSet('before','after','smoke','pick')]
+  [string]$Label = 'pick',
   [double]$DelaySeconds = 2,
   [int]$BatchSize = 25,
   [double]$BatchPauseSeconds = 45,
-  [int]$Max = 0
+  [int]$Max = 0,
+  [switch]$NoPick,
+  [switch]$Sample10
 )
 
 $ErrorActionPreference = 'Stop'
@@ -17,24 +19,38 @@ if (-not (Test-Path .\.venv\Scripts\python.exe)) {
   .\.venv\Scripts\python.exe -m pip install -r requirements.txt
 }
 
+# Default: open a file picker so you choose full-462, sample-10, etc.
+$runLabel = if ($Label -eq 'pick') { 'before' } else { $Label }
+
 $argsList = @(
   '-m', 'dacs_baseline', 'scan',
-  '--label', $Label,
-  '--input', 'input\identifiers-full-462.txt',
+  '--label', $runLabel,
   '--delay-seconds', "$DelaySeconds",
   '--batch-size', "$BatchSize",
   '--batch-pause-seconds', "$BatchPauseSeconds"
 )
-if ($Max -gt 0) { $argsList += @('--max', "$Max") }
-if ($Label -eq 'smoke') {
-  $argsList = @(
-    '-m', 'dacs_baseline', 'scan',
-    '--label', 'smoke',
-    '--input', 'input\identifiers-full-462.txt',
-    '--max', '5',
-    '--delay-seconds', "$DelaySeconds"
+
+if ($Sample10 -or $Label -eq 'smoke') {
+  $argsList += @('--sample-10', '--no-pick-input')
+  if ($Label -eq 'smoke') {
+    $argsList = @(
+      '-m', 'dacs_baseline', 'scan',
+      '--label', 'smoke',
+      '--sample-10',
+      '--no-pick-input',
+      '--delay-seconds', "$DelaySeconds"
+    )
+  }
+} elseif ($NoPick) {
+  $argsList += @(
+    '--no-pick-input',
+    '--input', 'input\identifiers-full-462.txt'
   )
+} else {
+  $argsList += @('--pick-input')
 }
+
+if ($Max -gt 0) { $argsList += @('--max', "$Max") }
 
 Write-Host "Running: python $($argsList -join ' ')"
 & .\.venv\Scripts\python.exe @argsList

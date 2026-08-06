@@ -19,12 +19,24 @@ python -m dacs_baseline scan --label before
 
 | File | Notes |
 |------|--------|
-| `identifiers-full-462.txt` | Full unique list (**default scan input**, 462 IDs) |
+| `identifiers-full-462.txt` | Full unique list (462 IDs) |
+| `identifiers-sample-10.txt` | Short list for quick tests (10 IDs) |
 | `identifiers.txt` | Working upload copy written per run |
 | `QAReqsThatExistInDACS.xlsx` | Source workbook |
 
-Refresh the full list from the xlsx:
+## Choosing a file
 
 ```powershell
-python -m dacs_baseline prep-ids --input input\QAReqsThatExistInDACS.xlsx
+# File picker popup (default)
+python -m dacs_baseline scan --label before --pick-input
+
+# Or 10-ID sample, no picker
+python -m dacs_baseline scan --label smoke --sample-10
+
+# Or full list, no picker
+python -m dacs_baseline scan --label before --no-pick-input --input input\identifiers-full-462.txt
+
+# PowerShell helper (opens picker)
+.\Run-Scan.ps1
+.\Run-Scan.ps1 -Sample10
 ```

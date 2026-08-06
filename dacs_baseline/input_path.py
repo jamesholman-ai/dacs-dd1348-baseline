@@ -6,6 +6,7 @@ INPUT_DIR_NAME = "input"
 FULL_IDENTIFIERS_NAME = "identifiers-full-462.txt"
 PREFERRED_NAMES = (
     FULL_IDENTIFIERS_NAME,
+    "identifiers-sample-10.txt",
     "identifiers.txt",
     "identifiers.csv",
     "QAReqsThatExistInDACS.xlsx",

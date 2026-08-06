@@ -11,6 +11,7 @@ from playwright.sync_api import sync_playwright
 from . import __version__
 from .compare import compare_runs, write_compare_report
 from .efts import click_cac_if_present, dismiss_scip_modals, wait_for_efts_ready
+from .file_picker import pick_input_file
 from .input_path import default_identifiers_path, input_dir, resolve_input
 from .scanner import run_baseline
 from .spreadsheet import infer_search_by, load_identifiers
@@ -21,6 +22,7 @@ DEFAULT_EFTS = "https://test.scip.dsca.mil/NewEftsWeb/"
 # Gov-cloud / CAC paths can be slow; Playwright default is 30s.
 DEFAULT_NAV_TIMEOUT_MS = 300_000  # 5 minutes
 DEFAULT_INPUT_NAME = "identifiers-full-462.txt"
+SAMPLE_INPUT_NAME = "identifiers-sample-10.txt"
 
 
 def _load_config(path: Path | None) -> dict:
@@ -57,7 +59,23 @@ def build_parser() -> argparse.ArgumentParser:
         "--input",
         type=Path,
         default=None,
-        help=f"xlsx/csv/txt of shipment identifiers (default: input/{DEFAULT_INPUT_NAME})",
+        help=f"xlsx/csv/txt of shipment identifiers (default: file picker, or input/{DEFAULT_INPUT_NAME})",
+    )
+    scan.add_argument(
+        "--pick-input",
+        action="store_true",
+        default=True,
+        help="Open a file-picker dialog to choose the ID list (default: on)",
+    )
+    scan.add_argument(
+        "--no-pick-input",
+        action="store_true",
+        help="Skip file picker; use --input / config / identifiers-full-462.txt",
+    )
+    scan.add_argument(
+        "--sample-10",
+        action="store_true",
+        help=f"Use input/{SAMPLE_INPUT_NAME} (10 IDs) without a picker",
     )
     scan.add_argument(
         "--efts-url",
@@ -154,9 +172,31 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def _resolve_src(args: argparse.Namespace, cfg: dict) -> Path:
+    # Explicit path wins
+    if getattr(args, "input", None) is not None:
+        try:
+            return resolve_input(args.input, None)
+        except FileNotFoundError as exc:
+            raise SystemExit(str(exc)) from exc
+
+    # Quick 10-ID sample
+    if getattr(args, "sample_10", False):
+        sample = input_dir() / SAMPLE_INPUT_NAME
+        if not sample.exists():
+            raise SystemExit(f"Sample file not found: {sample}")
+        return sample
+
+    use_picker = getattr(args, "pick_input", True) and not getattr(
+        args, "no_pick_input", False
+    )
+    # prep-ids has no pick flags
+    if hasattr(args, "no_pick_input") and use_picker:
+        print("Select the identifier list in the file dialog...")
+        return pick_input_file(initial_dir=input_dir())
+
     try:
         configured = cfg.get("input") or DEFAULT_INPUT_NAME
-        return resolve_input(args.input, configured)
+        return resolve_input(None, configured)
     except FileNotFoundError as exc:
         raise SystemExit(str(exc)) from exc
 

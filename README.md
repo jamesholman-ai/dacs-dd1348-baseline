@@ -12,12 +12,19 @@ Built for **gov-cloud Windows VMs with CAC**: uses installed **Chrome** + a pers
 
 ## Input folder
 
-Place Jeff’s spreadsheet in **`input/`**. Default scan input is the full list:
+Place Jeff’s spreadsheet in **`input/`**. On scan, a **file picker** opens so you
+can choose which list to use:
 
-1. `input/identifiers-full-462.txt` (**default** — 462 IDs)
-2. `input/identifiers.txt`
-3. `input/identifiers.csv`
-4. `input/QAReqsThatExistInDACS.xlsx`
+- `input/identifiers-full-462.txt` — full run (462)
+- `input/identifiers-sample-10.txt` — quick 10-ID test
+- any other `.txt` / `.csv` / `.xlsx` you select
+
+```powershell
+python -m dacs_baseline scan --label before          # picker
+python -m dacs_baseline scan --label smoke --sample-10
+.\Run-Scan.ps1                                      # picker
+.\Run-Scan.ps1 -Sample10
+```
 
 Default **Search By** is **TCN** (`#radio_TCN`).
 
