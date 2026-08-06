@@ -4,6 +4,7 @@ from pathlib import Path
 
 INPUT_DIR_NAME = "input"
 PREFERRED_NAMES = (
+    "identifiers-full-462.txt",
     "identifiers.txt",
     "identifiers.csv",
     "QAReqsThatExistInDACS.xlsx",

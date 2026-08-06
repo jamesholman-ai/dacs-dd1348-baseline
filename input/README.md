@@ -15,5 +15,6 @@ refresh `identifiers.txt`. Scans prefer the **txt** for List Search upload.
 
 | File | Notes |
 |------|--------|
-| `identifiers.txt` | Unique shipment identifiers for List Search upload (**preferred**) |
+| `identifiers-full-462.txt` | Full unique list from the spreadsheet (**preferred**, 462 IDs) |
+| `identifiers.txt` | Working List Search upload list |
 | `QAReqsThatExistInDACS.xlsx` | Source workbook |
