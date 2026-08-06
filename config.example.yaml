@@ -7,6 +7,6 @@ batch_size: 0
 batch_pause_seconds: 30
 list_search_wait_seconds: 900
 navigation_timeout_seconds: 300
-search_by: tcn              # List Search: #radio_TCN
-# Optional override; omit to auto-pick from ./input/ (prefers identifiers.txt)
-# input: identifiers.txt
+search_by: tcn
+# Full 462-ID list (do not replace with smoke subsets)
+input: identifiers-full-462.txt

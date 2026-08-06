@@ -196,8 +196,10 @@ def run_baseline(
     report_dir = out_dir / label if out_dir.name != label else out_dir
     report_dir.mkdir(parents=True, exist_ok=True)
     ids = [r.identifier for r in rows]
-    upload = write_upload_txt(ids, input_dir() / "identifiers.txt")
-    write_upload_txt(ids, report_dir / "list-search-upload.txt")
+    # Upload copy for this run only — do not overwrite identifiers-full-462.txt
+    upload = write_upload_txt(ids, report_dir / "list-search-upload.txt")
+    working = input_dir() / "identifiers.txt"
+    write_upload_txt(ids, working)
 
     efts.open_list_search(list_page, efts_base)
     efts.upload_or_paste_ids(list_page, upload, ids)

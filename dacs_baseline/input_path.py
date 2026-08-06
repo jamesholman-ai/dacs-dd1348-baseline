@@ -3,13 +3,19 @@ from __future__ import annotations
 from pathlib import Path
 
 INPUT_DIR_NAME = "input"
+FULL_IDENTIFIERS_NAME = "identifiers-full-462.txt"
 PREFERRED_NAMES = (
-    "identifiers-full-462.txt",
+    FULL_IDENTIFIERS_NAME,
     "identifiers.txt",
     "identifiers.csv",
     "QAReqsThatExistInDACS.xlsx",
 )
 EXTENSIONS = (".xlsx", ".xlsm", ".csv", ".txt")
+
+
+def default_identifiers_path(base: Path | None = None) -> Path:
+    """Canonical full 462-ID list used by scan/prep defaults."""
+    return input_dir(base) / FULL_IDENTIFIERS_NAME
 
 
 def repo_root() -> Path:

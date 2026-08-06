@@ -20,6 +20,7 @@ if (-not (Test-Path .\.venv\Scripts\python.exe)) {
 $argsList = @(
   '-m', 'dacs_baseline', 'scan',
   '--label', $Label,
+  '--input', 'input\identifiers-full-462.txt',
   '--delay-seconds', "$DelaySeconds",
   '--batch-size', "$BatchSize",
   '--batch-pause-seconds', "$BatchPauseSeconds"
@@ -29,6 +30,7 @@ if ($Label -eq 'smoke') {
   $argsList = @(
     '-m', 'dacs_baseline', 'scan',
     '--label', 'smoke',
+    '--input', 'input\identifiers-full-462.txt',
     '--max', '5',
     '--delay-seconds', "$DelaySeconds"
   )

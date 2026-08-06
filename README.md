@@ -12,13 +12,12 @@ Built for **gov-cloud Windows VMs with CAC**: uses installed **Chrome** + a pers
 
 ## Input folder
 
-Place Jeff’s spreadsheet in **`input/`**, then keep **`input/identifiers.txt`**
-(one shipment ID per line) for List Search upload. With no `--input` flag:
+Place Jeff’s spreadsheet in **`input/`**. Default scan input is the full list:
 
-1. `input/identifiers.txt` (preferred — uploaded to List Search)
-2. `input/identifiers.csv`
-3. `input/QAReqsThatExistInDACS.xlsx`
-4. Newest `.xlsx` / `.csv` / `.txt` in `input/`
+1. `input/identifiers-full-462.txt` (**default** — 462 IDs)
+2. `input/identifiers.txt`
+3. `input/identifiers.csv`
+4. `input/QAReqsThatExistInDACS.xlsx`
 
 Default **Search By** is **TCN** (`#radio_TCN`).
 

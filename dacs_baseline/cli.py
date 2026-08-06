@@ -11,7 +11,7 @@ from playwright.sync_api import sync_playwright
 from . import __version__
 from .compare import compare_runs, write_compare_report
 from .efts import click_cac_if_present, dismiss_scip_modals, wait_for_efts_ready
-from .input_path import input_dir, resolve_input
+from .input_path import default_identifiers_path, input_dir, resolve_input
 from .scanner import run_baseline
 from .spreadsheet import infer_search_by, load_identifiers
 from .throttle import Throttle
@@ -20,6 +20,7 @@ from .throttle import Throttle
 DEFAULT_EFTS = "https://test.scip.dsca.mil/NewEftsWeb/"
 # Gov-cloud / CAC paths can be slow; Playwright default is 30s.
 DEFAULT_NAV_TIMEOUT_MS = 300_000  # 5 minutes
+DEFAULT_INPUT_NAME = "identifiers-full-462.txt"
 
 
 def _load_config(path: Path | None) -> dict:
@@ -56,7 +57,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--input",
         type=Path,
         default=None,
-        help="xlsx/csv/txt of shipment identifiers (default: auto from ./input/)",
+        help=f"xlsx/csv/txt of shipment identifiers (default: input/{DEFAULT_INPUT_NAME})",
     )
     scan.add_argument(
         "--efts-url",
@@ -146,7 +147,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--out",
         type=Path,
         default=None,
-        help="Output txt (default: ./input/identifiers.txt)",
+        help=f"Output txt (default: ./input/{DEFAULT_INPUT_NAME})",
     )
 
     return p
@@ -154,20 +155,27 @@ def build_parser() -> argparse.ArgumentParser:
 
 def _resolve_src(args: argparse.Namespace, cfg: dict) -> Path:
     try:
-        return resolve_input(args.input, cfg.get("input"))
+        configured = cfg.get("input") or DEFAULT_INPUT_NAME
+        return resolve_input(args.input, configured)
     except FileNotFoundError as exc:
         raise SystemExit(str(exc)) from exc
 
 
 def cmd_prep(args: argparse.Namespace, cfg: dict) -> int:
     src = _resolve_src(args, cfg)
-    out = args.out or (input_dir() / "identifiers.txt")
+    out = args.out or default_identifiers_path()
     rows = load_identifiers(src, unique=True)
     out.parent.mkdir(parents=True, exist_ok=True)
     out.write_text("\n".join(r.identifier for r in rows) + "\n", encoding="utf-8")
+    # Keep identifiers.txt in sync as the working upload copy
+    working = input_dir() / "identifiers.txt"
+    if working.resolve() != out.resolve():
+        working.write_text(out.read_text(encoding="utf-8"), encoding="utf-8")
     search = infer_search_by(rows, cfg.get("search_by", "auto"))
     print(f"Source: {src}")
     print(f"Wrote {len(rows)} unique identifiers -> {out}")
+    if working.resolve() != out.resolve():
+        print(f"Also synced -> {working}")
     print(f"Inferred List Search mode: {search}")
     return 0
 
