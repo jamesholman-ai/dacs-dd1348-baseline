@@ -123,16 +123,16 @@ def select_search_by(page: Page, mode: str) -> None:
 
     Locators from EFTS Katalon / efts-element-map.json (list search page):
       - container: #searchBy
-      - requisition: #radio_REQ (same id used on Create Shipment for REQ)
       - tcn: #radio_TCN
+      - requisition: #radio_REQ
       - labels: All | TCN | Requisition | Contract
     """
-    mode = (mode or "requisition").strip().lower()
+    mode = (mode or "tcn").strip().lower()
     # Prefer stable EFTS element ids first
     id_map = {
-        "requisition": ["radio_REQ", "radio_REQN", "radio_Requisition"],
         "tcn": ["radio_TCN"],
-        "document": ["radio_REQ", "radio_DOC", "radio_Document"],  # legacy alias → REQ
+        "requisition": ["radio_REQ", "radio_REQN", "radio_Requisition"],
+        "document": ["radio_REQ", "radio_DOC", "radio_Document"],
         "all": ["radio_ALL", "radio_0"],
         "contract": ["radio_CTN", "radio_CONTRACT", "radio_Contract"],
     }
@@ -146,32 +146,29 @@ def select_search_by(page: Page, mode: str) -> None:
         except Exception:
             continue
 
-    # Radios / labels inside #searchBy (list-search map id)
     label_text = {
-        "requisition": "Requisition",
         "tcn": "TCN",
+        "requisition": "Requisition",
         "document": "Requisition",
         "all": "All",
         "contract": "Contract",
-    }.get(mode, "Requisition")
+    }.get(mode, "TCN")
 
     selectors = [
         f"#searchBy label:text-is('{label_text}')",
         f"#searchBy label:has-text('{label_text}')",
         f"#searchBy input[type='radio'][value='{label_text}' i]",
-        f"#searchBy input[type='radio'][value='REQ' i]",
-        f"#searchBy input[type='radio'][id*='REQ' i]",
+        f"#searchBy input[type='radio'][id*='{label_text}' i]",
         f"label:text-is('{label_text}')",
         f"label:has-text('{label_text}')",
         f"input[type='radio'][value='{label_text}' i]",
         f"input[type='radio'][id*='{label_text}' i]",
     ]
-    if mode in {"requisition", "document"}:
+    if mode == "tcn":
         selectors[0:0] = [
-            "#searchBy input[type='radio'][value='Requisition' i]",
-            "#searchBy input[type='radio'][value='REQ' i]",
-            "input[type='radio'][value='Requisition' i]",
-            "input[type='radio'][value='REQ' i]",
+            "#searchBy input[type='radio'][value='TCN' i]",
+            "input[type='radio'][value='TCN' i]",
+            "#radio_TCN",
         ]
 
     for sel in selectors:
@@ -364,11 +361,11 @@ def is_details_page(page: Page) -> bool:
 
 
 def wait_for_irrd_ready(page: Page, timeout_ms: int = 90_000) -> dict:
-    """Wait until Document Center Original DD1348 IRRD shows Unavailable or a link."""
+    """Wait until Original DD1348 IRRD shows 'Click to Open' or 'Unavailable'."""
     import time
 
     end = time.time() + timeout_ms / 1000.0
-    last = {"state": "missing", "detail": "IRRD_TIMEOUT", "href": ""}
+    last = {"state": "missing", "detail": "IRRD_TIMEOUT", "href": "", "label": ""}
     while time.time() < end:
         last = inspect_original_dd1348_irrd(page)
         if last["state"] in {"unavailable", "available"}:
@@ -379,7 +376,9 @@ def wait_for_irrd_ready(page: Page, timeout_ms: int = 90_000) -> dict:
 
 def inspect_original_dd1348_irrd(page: Page) -> dict:
     """
-    Document Center: Original DD1348 IRRD — Unavailable vs download link.
+    Document Center: Original DD1348 IRRD
+      - available  → UI text "Click to Open" (download link)
+      - unavailable → UI text "Unavailable"
     Primary id from Katalon / EFTS: #originalDD1348irrd
     """
     container = page.locator(f"#{IRRD_ID}").first
@@ -388,54 +387,85 @@ def inspect_original_dd1348_irrd(page: Page) -> dict:
             "[id*='originaldd1348' i], [id*='originalDD1348']"
         ).first
     if container.count() == 0:
-        # Fallback: locate by label text in Document Center
         try:
             label = page.locator("text=Original DD1348 IRRD").first
             if label.count():
-                container = label.locator(
-                    "xpath=ancestor::*[contains(@class,'document') or self::div][1]"
-                )
+                container = label.locator("xpath=following-sibling::*[1] | xpath=..")
         except Exception:
             pass
     if container.count() == 0:
-        return {"state": "missing", "detail": "IRRD_CONTAINER_NOT_FOUND", "href": ""}
+        return {
+            "state": "missing",
+            "detail": "IRRD_CONTAINER_NOT_FOUND",
+            "href": "",
+            "label": "",
+        }
 
     try:
         panel_text = (container.inner_text(timeout=3000) or "").strip()
     except Exception:
         panel_text = ""
     upper = panel_text.upper()
+
+    # Explicit UI states from Document Center
+    click_to_open = "CLICK TO OPEN" in upper
     unavailable = "UNAVAILABLE" in upper
     try:
         if container.locator(
-            "img[src*='download_icon_disabled'], img[src*='download_icon_disabled' i], "
-            ".disabled, [class*='unavailable' i]"
+            "img[src*='download_icon_disabled'], [class*='unavailable' i]"
         ).count():
             unavailable = True
     except Exception:
         pass
 
-    # Live download link (not the disabled icon / "Unavailable" text-only)
-    link = container.locator("a[href]:not([href='']):not([href='#'])").first
-    has_link = False
     href = ""
+    link_text = ""
     try:
-        if link.count() and link.is_visible(timeout=1500):
-            href = (link.get_attribute("href") or "").strip()
-            link_text = (link.inner_text(timeout=500) or "").strip().upper()
-            # "Unavailable" is sometimes wrapped oddly; ignore non-download text links
-            if href and "UNAVAILABLE" not in link_text:
-                has_link = True
+        # Prefer the visible "Click to Open" anchor
+        open_link = container.locator(
+            "a:has-text('Click to Open'), a:has-text('click to open')"
+        ).first
+        if open_link.count() and open_link.is_visible(timeout=1000):
+            click_to_open = True
+            href = (open_link.get_attribute("href") or "").strip()
+            link_text = "Click to Open"
+        else:
+            link = container.locator("a[href]:not([href='']):not([href='#'])").first
+            if link.count() and link.is_visible(timeout=1000):
+                href = (link.get_attribute("href") or "").strip()
+                link_text = (link.inner_text(timeout=500) or "").strip()
+                if "UNAVAILABLE" not in link_text.upper():
+                    click_to_open = True
     except Exception:
         pass
 
-    if has_link and not unavailable:
-        return {"state": "available", "detail": href or panel_text, "href": href}
-    if unavailable or (not has_link and "UNAVAILABLE" in upper):
-        return {"state": "unavailable", "detail": "UNAVAILABLE", "href": ""}
-    if has_link:
-        return {"state": "available", "detail": href or panel_text, "href": href}
-    return {"state": "missing", "detail": panel_text or "NO_LINK", "href": ""}
+    if click_to_open and not unavailable:
+        return {
+            "state": "available",
+            "detail": "Click to Open",
+            "href": href,
+            "label": link_text or "Click to Open",
+        }
+    if unavailable:
+        return {
+            "state": "unavailable",
+            "detail": "Unavailable",
+            "href": "",
+            "label": "Unavailable",
+        }
+    if click_to_open:
+        return {
+            "state": "available",
+            "detail": "Click to Open",
+            "href": href,
+            "label": link_text or "Click to Open",
+        }
+    return {
+        "state": "missing",
+        "detail": panel_text or "NO_LINK",
+        "href": "",
+        "label": panel_text,
+    }
 
 
 def click_irrd_download(page: Page) -> None:

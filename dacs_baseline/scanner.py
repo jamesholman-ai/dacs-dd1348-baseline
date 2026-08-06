@@ -14,7 +14,11 @@ from .spreadsheet import ShipmentRow, write_upload_txt
 from .throttle import Throttle
 
 
+# Default report root (new folder for DD1348 Click-to-Open vs Unavailable)
+DEFAULT_REPORT_DIR = Path("reports") / "dd1348-irrd"
+
 HIT_STATUSES = {
+    "CLICK_TO_OPEN",
     "HAS_ORIGINAL_DD1348",
     "AVAILABLE_PDF_OK",
     "AVAILABLE_PDF_OPENED_NO_TEXT",
@@ -27,8 +31,8 @@ class ScanResult:
     status: str
     detail: str
     details_url: str = ""
-    pdf_url: str = ""
     has_original_dd1348: str = ""  # yes | no | unknown
+    ui_label: str = ""  # "Click to Open" | "Unavailable" | ...
 
 
 def _csv_safe(value: object) -> str:
@@ -42,8 +46,9 @@ def scan_one(
     efts_base: str,
 ) -> tuple[ScanResult, Page]:
     """
-    Open TCN Details, check Original DD1348 IRRD (link vs Unavailable),
-    write outcome, then always return to List Search results.
+    Click result (opens Details in a new tab) → stay on that tab →
+    read Original DD1348 IRRD (Click to Open vs Unavailable) → close tab →
+    return to List Search.
     """
     list_page = efts.return_to_list_search(context, list_page, efts_base)
     before = set(context.pages)
@@ -52,9 +57,8 @@ def scan_one(
 
     try:
         efts.click_shipment_identifier(list_page, identifier)
-        details = _wait_new_page(context, before, timeout_ms=15_000)
+        details = _wait_new_page(context, before, timeout_ms=30_000)
         if details is None:
-            # Same-tab navigation fallback
             list_page.wait_for_timeout(1000)
             if efts.is_details_page(list_page):
                 details = list_page
@@ -65,14 +69,16 @@ def scan_one(
                     ScanResult(
                         identifier,
                         "error",
-                        "Details page did not open",
-                        "",
+                        "Details tab did not open",
                         "",
                         "unknown",
+                        "",
                     ),
                     list_page,
                 )
 
+        # Continue work on the Details tab
+        details.bring_to_front()
         details.wait_for_load_state("domcontentloaded", timeout=300_000)
         details.wait_for_timeout(500)
 
@@ -80,12 +86,13 @@ def scan_one(
             url = details.url or ""
             list_page = _finish_details(context, list_page, details, same_tab, efts_base)
             return (
-                ScanResult(identifier, "error", "EFTS_ERROR_PAGE", url, "", "unknown"),
+                ScanResult(identifier, "error", "EFTS_ERROR_PAGE", url, "unknown", ""),
                 list_page,
             )
 
         details_url = details.url or ""
         irrd = efts.wait_for_irrd_ready(details, timeout_ms=90_000)
+        ui_label = (irrd.get("label") or irrd.get("detail") or "").strip()
 
         if irrd["state"] == "unavailable":
             list_page = _finish_details(context, list_page, details, same_tab, efts_base)
@@ -95,8 +102,8 @@ def scan_one(
                     "UNAVAILABLE",
                     "Original DD1348 IRRD: Unavailable",
                     details_url,
-                    "",
                     "no",
+                    "Unavailable",
                 ),
                 list_page,
             )
@@ -106,11 +113,11 @@ def scan_one(
             return (
                 ScanResult(
                     identifier,
-                    "HAS_ORIGINAL_DD1348",
-                    f"Original DD1348 IRRD: link {_csv_safe(irrd.get('href') or irrd.get('detail'))}",
+                    "CLICK_TO_OPEN",
+                    "Original DD1348 IRRD: Click to Open",
                     details_url,
-                    irrd.get("href") or "",
                     "yes",
+                    ui_label or "Click to Open",
                 ),
                 list_page,
             )
@@ -122,8 +129,8 @@ def scan_one(
                 "error",
                 f"IRRD_UNCLEAR: {_csv_safe(irrd.get('detail'))}",
                 details_url,
-                "",
                 "unknown",
+                ui_label,
             ),
             list_page,
         )
@@ -133,7 +140,7 @@ def scan_one(
         except Exception:
             pass
         return (
-            ScanResult(identifier, "error", f"ERROR: {exc}", "", "", "unknown"),
+            ScanResult(identifier, "error", f"ERROR: {exc}", "", "unknown", ""),
             list_page,
         )
 
@@ -146,7 +153,6 @@ def _finish_details(
     efts_base: str,
 ) -> Page:
     if same_tab:
-        # details is list_page — go back to results
         return efts.return_to_list_search(context, list_page, efts_base)
     try:
         if details != list_page and not details.is_closed():
@@ -186,42 +192,47 @@ def run_baseline(
     list_search_wait_seconds: int,
     label: str = "baseline",
 ) -> dict:
-    out_dir.mkdir(parents=True, exist_ok=True)
+    # reports/dd1348-irrd/<label>/
+    report_dir = out_dir / label if out_dir.name != label else out_dir
+    report_dir.mkdir(parents=True, exist_ok=True)
     ids = [r.identifier for r in rows]
     upload = write_upload_txt(ids, input_dir() / "identifiers.txt")
-    write_upload_txt(ids, out_dir / "list-search-upload.txt")
+    write_upload_txt(ids, report_dir / "list-search-upload.txt")
 
     efts.open_list_search(list_page, efts_base)
     efts.upload_or_paste_ids(list_page, upload, ids)
-    efts.select_search_by(list_page, search_by or "requisition")
+    efts.select_search_by(list_page, search_by or "tcn")
     efts.click_search(list_page)
     expected = efts.wait_for_results(list_page, list_search_wait_seconds)
 
     stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    results_path = out_dir / f"dacs-dd1348-scan-results_{label}_{stamp}.csv"
-    hits_path = out_dir / f"dacs-dd1348-baseline-hits_{label}_{stamp}.csv"
-    unavail_path = out_dir / f"dacs-dd1348-unavailable_{label}_{stamp}.csv"
+    all_path = report_dir / f"all-results_{stamp}.csv"
+    had_path = report_dir / f"had-dd1348_{stamp}.csv"
+    no_path = report_dir / f"no-dd1348_{stamp}.csv"
+    summary_path = report_dir / f"summary_{stamp}.txt"
 
     hit_count = unavailable_count = error_count = scanned = 0
     found: set[str] = set()
 
     with (
-        results_path.open("w", encoding="utf-8", newline="") as rf,
-        hits_path.open("w", encoding="utf-8", newline="") as hf,
-        unavail_path.open("w", encoding="utf-8", newline="") as uf,
+        all_path.open("w", encoding="utf-8", newline="") as rf,
+        had_path.open("w", encoding="utf-8", newline="") as hf,
+        no_path.open("w", encoding="utf-8", newline="") as uf,
     ):
         results = csv.writer(rf)
-        hits = csv.writer(hf)
-        unavail = csv.writer(uf)
-        results.writerow(
-            ["identifier", "has_original_dd1348", "status", "detail", "detailsUrl", "pdfUrl"]
-        )
-        hits.writerow(
-            ["identifier", "has_original_dd1348", "status", "detail", "detailsUrl", "pdfUrl"]
-        )
-        unavail.writerow(
-            ["identifier", "has_original_dd1348", "status", "detail", "detailsUrl"]
-        )
+        had = csv.writer(hf)
+        no = csv.writer(uf)
+        header = [
+            "identifier",
+            "has_original_dd1348",
+            "ui_label",
+            "status",
+            "detail",
+            "detailsUrl",
+        ]
+        results.writerow(header)
+        had.writerow(header)
+        no.writerow(header)
 
         page_num = 1
         more = True
@@ -238,55 +249,38 @@ def run_baseline(
                     row, list_page = scan_one(list_page, context, ident, efts_base)
                 except Exception as exc:
                     row = ScanResult(
-                        ident, "error", f"ERROR: {exc}", "", "", "unknown"
+                        ident, "error", f"ERROR: {exc}", "", "unknown", ""
                     )
                     list_page = efts.return_to_list_search(context, list_page, efts_base)
 
                 scanned += 1
-                results.writerow(
-                    [
-                        row.identifier,
-                        row.has_original_dd1348,
-                        row.status,
-                        _csv_safe(row.detail),
-                        _csv_safe(row.details_url),
-                        _csv_safe(row.pdf_url),
-                    ]
-                )
-                if row.status == "UNAVAILABLE" or row.has_original_dd1348 == "no":
-                    unavailable_count += 1
-                    unavail.writerow(
-                        [
-                            row.identifier,
-                            row.has_original_dd1348 or "no",
-                            "UNAVAILABLE",
-                            _csv_safe(row.detail),
-                            _csv_safe(row.details_url),
-                        ]
-                    )
-                elif row.status in HIT_STATUSES or row.has_original_dd1348 == "yes":
+                csv_row = [
+                    row.identifier,
+                    row.has_original_dd1348,
+                    _csv_safe(row.ui_label),
+                    row.status,
+                    _csv_safe(row.detail),
+                    _csv_safe(row.details_url),
+                ]
+                results.writerow(csv_row)
+
+                if row.has_original_dd1348 == "yes" or row.status in HIT_STATUSES:
                     hit_count += 1
-                    hits.writerow(
-                        [
-                            row.identifier,
-                            "yes",
-                            row.status,
-                            _csv_safe(row.detail),
-                            _csv_safe(row.details_url),
-                            _csv_safe(row.pdf_url),
-                        ]
-                    )
-                if row.status == "error":
+                    had.writerow(csv_row)
+                elif row.has_original_dd1348 == "no" or row.status == "UNAVAILABLE":
+                    unavailable_count += 1
+                    no.writerow(csv_row)
+                else:
                     error_count += 1
 
-                # Flush so a crash mid-run still leaves a usable report
                 rf.flush()
                 hf.flush()
                 uf.flush()
 
                 print(
                     f"[scan] {scanned}/{expected} {row.identifier} "
-                    f"has_original_dd1348={row.has_original_dd1348} status={row.status}"
+                    f"dd1348={row.has_original_dd1348} ui='{row.ui_label}' "
+                    f"status={row.status}"
                 )
                 throttle.after_item(scanned)
 
@@ -301,18 +295,44 @@ def run_baseline(
             if ident.upper() not in found:
                 not_found += 1
                 results.writerow(
-                    [ident, "unknown", "NOT_IN_LIST_SEARCH_RESULTS", "", "", ""]
+                    [ident, "unknown", "", "NOT_IN_LIST_SEARCH_RESULTS", "", ""]
                 )
 
-    latest_results = out_dir / f"dacs-dd1348-scan-results_{label}.csv"
-    latest_hits = out_dir / f"dacs-dd1348-baseline-hits_{label}.csv"
-    latest_unavail = out_dir / f"dacs-dd1348-unavailable_{label}.csv"
-    shutil.copyfile(results_path, latest_results)
-    shutil.copyfile(hits_path, latest_hits)
-    shutil.copyfile(unavail_path, latest_unavail)
+    # Stable "latest" copies + human summary
+    latest_all = report_dir / "all-results.csv"
+    latest_had = report_dir / "had-dd1348.csv"
+    latest_no = report_dir / "no-dd1348.csv"
+    latest_summary = report_dir / "summary.txt"
+    shutil.copyfile(all_path, latest_all)
+    shutil.copyfile(had_path, latest_had)
+    shutil.copyfile(no_path, latest_no)
 
-    summary = {
+    summary_text = "\n".join(
+        [
+            "DACS Original DD1348 IRRD report",
+            f"label: {label}",
+            f"search_by: {search_by or 'tcn'}",
+            f"uploaded: {len(ids)}",
+            f"list_search_results: {expected}",
+            f"scanned: {scanned}",
+            f"had_dd1348 (Click to Open): {hit_count}",
+            f"no_dd1348 (Unavailable): {unavailable_count}",
+            f"errors_or_unclear: {error_count}",
+            f"not_in_results: {not_found}",
+            f"hit_rate: {(hit_count / scanned) if scanned else 0.0:.1%}",
+            "",
+            f"had-dd1348: {latest_had}",
+            f"no-dd1348:  {latest_no}",
+            f"all-results: {latest_all}",
+        ]
+    )
+    summary_path.write_text(summary_text + "\n", encoding="utf-8")
+    latest_summary.write_text(summary_text + "\n", encoding="utf-8")
+    print(summary_text)
+
+    return {
         "label": label,
+        "report_dir": str(report_dir),
         "uploaded": len(ids),
         "expected_results": expected,
         "scanned": scanned,
@@ -321,13 +341,8 @@ def run_baseline(
         "errors": error_count,
         "not_in_results": not_found,
         "hit_rate": (hit_count / scanned) if scanned else 0.0,
-        "results_file": str(latest_results),
-        "hits_file": str(latest_hits),
-        "unavailable_file": str(latest_unavail),
+        "had_dd1348_file": str(latest_had),
+        "no_dd1348_file": str(latest_no),
+        "all_results_file": str(latest_all),
+        "summary_file": str(latest_summary),
     }
-    print(
-        f"[scan] complete label={label} uploaded={len(ids)} scanned={scanned} "
-        f"has_dd1348={hit_count} unavailable={unavailable_count} errors={error_count} "
-        f"hit_rate={summary['hit_rate']:.1%}"
-    )
-    return summary

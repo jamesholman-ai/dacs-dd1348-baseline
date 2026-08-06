@@ -5,6 +5,7 @@ from pathlib import Path
 
 
 HIT_STATUSES = {
+    "CLICK_TO_OPEN",
     "HAS_ORIGINAL_DD1348",
     "AVAILABLE_PDF_OK",
     "AVAILABLE_PDF_OPENED_NO_TEXT",

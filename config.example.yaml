@@ -1,14 +1,12 @@
 # Copy to config.yaml and adjust for your VM.
 efts_url: https://test.scip.dsca.mil/NewEftsWeb/
-# Optional: Chrome user-data dir so CAC session persists across runs
 user_data_dir: ./user-data
 headless: false
-# Throttle defaults (override on CLI)
 delay_seconds: 2.0
-batch_size: 0          # 0 = no batch pause
+batch_size: 0
 batch_pause_seconds: 30
 list_search_wait_seconds: 900
-navigation_timeout_seconds: 300  # page.goto / navigation (5 min for gov-cloud lag)
-search_by: requisition  # List Search: All | TCN | Requisition | Contract (#radio_REQ)
+navigation_timeout_seconds: 300
+search_by: tcn              # List Search: #radio_TCN
 # Optional override; omit to auto-pick from ./input/ (prefers identifiers.txt)
 # input: identifiers.txt

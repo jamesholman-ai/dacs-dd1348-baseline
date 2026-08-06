@@ -4,7 +4,10 @@ __pycache__/
 venv/
 .env
 config.yaml
-reports/
+reports/*
+!reports/dd1348-irrd/
+!reports/dd1348-irrd/README.md
+
 data/*.xlsx
 data/*.xls
 *.log

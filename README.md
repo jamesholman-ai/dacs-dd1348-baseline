@@ -20,7 +20,7 @@ Place Jeff’s spreadsheet in **`input/`**, then keep **`input/identifiers.txt`*
 3. `input/QAReqsThatExistInDACS.xlsx`
 4. Newest `.xlsx` / `.csv` / `.txt` in `input/`
 
-Default **Search By** is **Requisition** (`#radio_REQ` from EFTS element map).
+Default **Search By** is **TCN** (`#radio_TCN`).
 
 ## Setup (on the VM)
 
@@ -72,11 +72,11 @@ python -m dacs_baseline scan --label before `
   --delay-seconds 2 --batch-size 25 --batch-pause-seconds 45
 ```
 
-Chrome opens → complete CAC → scanner runs. Outputs under `reports/`:
+Chrome opens → complete CAC → scanner runs. Reports under `reports/dd1348-irrd/<label>/`:
 
-- `dacs-dd1348-scan-results_before.csv`
-- `dacs-dd1348-baseline-hits_before.csv`
-- `dacs-dd1348-unavailable_before.csv`
+- `had-dd1348.csv` — Original DD1348 IRRD showed **Click to Open**
+- `no-dd1348.csv` — showed **Unavailable**
+- `all-results.csv` / `summary.txt`
 
 ### After deploy (identical process)
 
@@ -89,8 +89,8 @@ python -m dacs_baseline scan --label after `
 
 ```powershell
 python -m dacs_baseline compare `
-  --before reports\dacs-dd1348-scan-results_before.csv `
-  --after reports\dacs-dd1348-scan-results_after.csv
+  --before reports\dd1348-irrd\before\all-results.csv `
+  --after reports\dd1348-irrd\after\all-results.csv
 ```
 
 ## Smoke test a few IDs first
@@ -103,8 +103,8 @@ python -m dacs_baseline scan --label smoke --max 5 --delay-seconds 2
 ## Notes
 
 - Selectors / flow ported from `Navsup.Wss.Efts.WebApps.Primary.Katalon` (`DacsDd1348BaselineWorkflow`, `EftsListSearchPage`).
-- Per shipment: open Details → read **Original DD1348 IRRD** (`#originalDD1348irrd`) → record **yes** (download link) or **no** (Unavailable) → **return to List Search** and continue.
-- Report columns include `has_original_dd1348` (`yes`/`no`) plus hits / unavailable CSVs.
+- Flow: List Search by **TCN** → click result (**new tab**) → on that tab read **Original DD1348 IRRD** for **Click to Open** vs **Unavailable** → close tab → back to results → continue.
+- Reports go to `reports/dd1348-irrd/<label>/` (`had-dd1348.csv` / `no-dd1348.csv`).
 - `--search-by tcn|document|requisition|auto` overrides List Search radio.
 - `--start-index` / `--max` slice the list for resume or sampling.
 - `--input path` still overrides `./input/` when you need a one-off file.

@@ -103,8 +103,8 @@ def build_parser() -> argparse.ArgumentParser:
     scan.add_argument(
         "--out-dir",
         type=Path,
-        default=Path("reports"),
-        help="Output directory for CSVs",
+        default=Path("reports") / "dd1348-irrd",
+        help="Report folder (default: reports/dd1348-irrd/<label>/)",
     )
     scan.add_argument(
         "--user-data-dir",
@@ -185,7 +185,7 @@ def cmd_scan(args: argparse.Namespace, cfg: dict) -> int:
 
     efts_url = args.efts_url or cfg.get("efts_url") or DEFAULT_EFTS
     user_data = args.user_data_dir or Path(cfg.get("user_data_dir") or "user-data")
-    search_override = args.search_by or cfg.get("search_by") or "requisition"
+    search_override = args.search_by or cfg.get("search_by") or "tcn"
 
     delay = (
         args.delay_seconds
