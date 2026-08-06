@@ -298,30 +298,225 @@ def collect_shipment_identifiers(page: Page) -> list[str]:
 
 
 def click_shipment_identifier(page: Page, identifier: str) -> None:
+    """Click result row; force target=_blank so List Search stays open."""
     page.locator("#resultsTable").wait_for(state="attached", timeout=30_000)
     result = page.evaluate(
         """(id) => {
         const table = document.getElementById('resultsTable');
         if (!table) return 'NO_TABLE';
-        for (const a of table.querySelectorAll('a[href*="Details"]')) {
+        const anchors = table.querySelectorAll('a[href*="Details"]');
+        for (const a of anchors) {
           const text = (a.innerText || a.textContent || '').trim();
           if (text === id) {
+            a.setAttribute('target', '_blank');
+            a.setAttribute('rel', 'noopener noreferrer');
             a.scrollIntoView({block: 'center', inline: 'nearest'});
             a.click();
             return 'CLICKED';
+          }
+        }
+        // Prefix match (list may show shorter form than Details title)
+        const upper = id.toUpperCase();
+        for (const a of anchors) {
+          const text = (a.innerText || a.textContent || '').trim().toUpperCase();
+          if (text.startsWith(upper) || upper.startsWith(text)) {
+            a.setAttribute('target', '_blank');
+            a.setAttribute('rel', 'noopener noreferrer');
+            a.scrollIntoView({block: 'center', inline: 'nearest'});
+            a.click();
+            return 'CLICKED_PREFIX';
           }
         }
         return 'NOT_FOUND';
     }""",
         identifier,
     )
-    if result != "CLICKED":
+    if not str(result).startswith("CLICKED"):
         link = page.locator(
             f"#resultsTable a[href*='Details']:text-is('{identifier}')"
         ).first
         if link.count() == 0:
             raise RuntimeError(f"Shipment Identifier link not found: {identifier}")
-        link.click()
+        page.evaluate(
+            """(el) => { el.setAttribute('target','_blank'); el.click(); }""",
+            link.element_handle(),
+        )
+
+
+def is_list_search_results(page: Page) -> bool:
+    try:
+        if page.is_closed():
+            return False
+        url = (page.url or "").lower()
+        if "listsearch" in url and page.locator("#resultsTable").count() > 0:
+            return True
+        return page.locator("#resultsTable a[href*='Details']").count() > 0
+    except Exception:
+        return False
+
+
+def is_details_page(page: Page) -> bool:
+    try:
+        url = (page.url or "").lower()
+        return "details" in url and "listsearch" not in url
+    except Exception:
+        return False
+
+
+def wait_for_irrd_ready(page: Page, timeout_ms: int = 90_000) -> dict:
+    """Wait until Document Center Original DD1348 IRRD shows Unavailable or a link."""
+    import time
+
+    end = time.time() + timeout_ms / 1000.0
+    last = {"state": "missing", "detail": "IRRD_TIMEOUT", "href": ""}
+    while time.time() < end:
+        last = inspect_original_dd1348_irrd(page)
+        if last["state"] in {"unavailable", "available"}:
+            return last
+        page.wait_for_timeout(1000)
+    return last
+
+
+def inspect_original_dd1348_irrd(page: Page) -> dict:
+    """
+    Document Center: Original DD1348 IRRD — Unavailable vs download link.
+    Primary id from Katalon / EFTS: #originalDD1348irrd
+    """
+    container = page.locator(f"#{IRRD_ID}").first
+    if container.count() == 0:
+        container = page.locator(
+            "[id*='originaldd1348' i], [id*='originalDD1348']"
+        ).first
+    if container.count() == 0:
+        # Fallback: locate by label text in Document Center
+        try:
+            label = page.locator("text=Original DD1348 IRRD").first
+            if label.count():
+                container = label.locator(
+                    "xpath=ancestor::*[contains(@class,'document') or self::div][1]"
+                )
+        except Exception:
+            pass
+    if container.count() == 0:
+        return {"state": "missing", "detail": "IRRD_CONTAINER_NOT_FOUND", "href": ""}
+
+    try:
+        panel_text = (container.inner_text(timeout=3000) or "").strip()
+    except Exception:
+        panel_text = ""
+    upper = panel_text.upper()
+    unavailable = "UNAVAILABLE" in upper
+    try:
+        if container.locator(
+            "img[src*='download_icon_disabled'], img[src*='download_icon_disabled' i], "
+            ".disabled, [class*='unavailable' i]"
+        ).count():
+            unavailable = True
+    except Exception:
+        pass
+
+    # Live download link (not the disabled icon / "Unavailable" text-only)
+    link = container.locator("a[href]:not([href='']):not([href='#'])").first
+    has_link = False
+    href = ""
+    try:
+        if link.count() and link.is_visible(timeout=1500):
+            href = (link.get_attribute("href") or "").strip()
+            link_text = (link.inner_text(timeout=500) or "").strip().upper()
+            # "Unavailable" is sometimes wrapped oddly; ignore non-download text links
+            if href and "UNAVAILABLE" not in link_text:
+                has_link = True
+    except Exception:
+        pass
+
+    if has_link and not unavailable:
+        return {"state": "available", "detail": href or panel_text, "href": href}
+    if unavailable or (not has_link and "UNAVAILABLE" in upper):
+        return {"state": "unavailable", "detail": "UNAVAILABLE", "href": ""}
+    if has_link:
+        return {"state": "available", "detail": href or panel_text, "href": href}
+    return {"state": "missing", "detail": panel_text or "NO_LINK", "href": ""}
+
+
+def click_irrd_download(page: Page) -> None:
+    container = page.locator(f"#{IRRD_ID}").first
+    if container.count() == 0:
+        container = page.locator("[id*='originaldd1348' i]").first
+    link = container.locator("a[href]:not([href='']):not([href='#'])").first
+    link.click()
+
+
+def close_extra_pages(context: BrowserContext, keep: Page) -> None:
+    for p in list(context.pages):
+        if p != keep and not p.is_closed():
+            try:
+                p.close()
+            except Exception:
+                pass
+    try:
+        keep.bring_to_front()
+    except Exception:
+        pass
+
+
+def return_to_list_search(
+    context: BrowserContext,
+    list_page: Page,
+    efts_base: str,
+) -> Page:
+    """
+    Always get back to List Search results after a Details check.
+    Handles Details opened in a new tab OR same-tab navigation.
+    """
+    # Close Details / PDF tabs; keep the list page handle if possible
+    for p in list(context.pages):
+        if p.is_closed():
+            continue
+        if p == list_page:
+            continue
+        try:
+            if is_details_page(p) or "pdf" in (p.url or "").lower():
+                p.close()
+            elif not is_list_search_results(p):
+                p.close()
+        except Exception:
+            try:
+                p.close()
+            except Exception:
+                pass
+
+    # Revive list_page if it was closed
+    if list_page.is_closed():
+        for p in context.pages:
+            if is_list_search_results(p):
+                p.bring_to_front()
+                return p
+        # Last resort: reopen List Search (results will need re-query by caller)
+        page = context.pages[0] if context.pages else context.new_page()
+        open_list_search(page, efts_base)
+        return page
+
+    # Same-tab case: navigated to Details on list_page
+    if is_details_page(list_page) or not is_list_search_results(list_page):
+        try:
+            list_page.go_back(wait_until="domcontentloaded", timeout=DEFAULT_NAV_TIMEOUT_MS)
+            list_page.wait_for_timeout(800)
+        except Exception:
+            pass
+        if not is_list_search_results(list_page):
+            try:
+                list_page.go_back(wait_until="domcontentloaded", timeout=DEFAULT_NAV_TIMEOUT_MS)
+                list_page.wait_for_timeout(800)
+            except Exception:
+                pass
+        if not is_list_search_results(list_page):
+            open_list_search(list_page, efts_base)
+
+    try:
+        list_page.bring_to_front()
+    except Exception:
+        pass
+    return list_page
 
 
 def has_next_page(page: Page) -> bool:
@@ -444,63 +639,3 @@ def is_efts_error_page(page: Page) -> bool:
         return "EFTS has encountered an internal problem" in text
     except Exception:
         return False
-
-
-def inspect_original_dd1348_irrd(page: Page) -> dict:
-    """Mirror Katalon DacsDd1348BaselineWorkflow.inspectOriginalDd1348Irrd."""
-    container = page.locator(f"#{IRRD_ID}").first
-    if container.count() == 0:
-        container = page.locator("[id*='originaldd1348' i], [id*='originalDD1348']").first
-    if container.count() == 0:
-        return {"state": "missing", "detail": "IRRD_CONTAINER_NOT_FOUND", "href": ""}
-
-    try:
-        panel_text = (container.inner_text(timeout=3000) or "").strip()
-    except Exception:
-        panel_text = ""
-    upper = panel_text.upper()
-    unavailable = "UNAVAILABLE" in upper
-    try:
-        if container.locator("img[src*='download_icon_disabled']").count():
-            unavailable = True
-    except Exception:
-        pass
-
-    link = container.locator("a").first
-    has_link = False
-    href = ""
-    try:
-        if link.count() and link.is_visible(timeout=1500):
-            has_link = True
-            href = (link.get_attribute("href") or "").strip()
-    except Exception:
-        pass
-
-    if unavailable and not has_link:
-        return {"state": "unavailable", "detail": "UNAVAILABLE", "href": ""}
-    if has_link:
-        return {"state": "available", "detail": href or panel_text, "href": href}
-    if unavailable:
-        return {"state": "unavailable", "detail": "UNAVAILABLE", "href": ""}
-    return {"state": "missing", "detail": panel_text or "NO_LINK", "href": ""}
-
-
-def click_irrd_download(page: Page) -> None:
-    container = page.locator(f"#{IRRD_ID}").first
-    if container.count() == 0:
-        container = page.locator("[id*='originaldd1348' i]").first
-    link = container.locator("a").first
-    link.click()
-
-
-def close_extra_pages(context: BrowserContext, keep: Page) -> None:
-    for p in list(context.pages):
-        if p != keep and not p.is_closed():
-            try:
-                p.close()
-            except Exception:
-                pass
-    try:
-        keep.bring_to_front()
-    except Exception:
-        pass

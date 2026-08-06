@@ -103,8 +103,8 @@ python -m dacs_baseline scan --label smoke --max 5 --delay-seconds 2
 ## Notes
 
 - Selectors / flow ported from `Navsup.Wss.Efts.WebApps.Primary.Katalon` (`DacsDd1348BaselineWorkflow`, `EftsListSearchPage`).
-- Hit = IRRD download link present (`AVAILABLE_PDF_OK` or `AVAILABLE_PDF_OPENED_NO_TEXT`).
-- Miss = `UNAVAILABLE`.
+- Per shipment: open Details → read **Original DD1348 IRRD** (`#originalDD1348irrd`) → record **yes** (download link) or **no** (Unavailable) → **return to List Search** and continue.
+- Report columns include `has_original_dd1348` (`yes`/`no`) plus hits / unavailable CSVs.
 - `--search-by tcn|document|requisition|auto` overrides List Search radio.
 - `--start-index` / `--max` slice the list for resume or sampling.
 - `--input path` still overrides `./input/` when you need a one-off file.

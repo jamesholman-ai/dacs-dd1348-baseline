@@ -4,7 +4,11 @@ import csv
 from pathlib import Path
 
 
-HIT_STATUSES = {"AVAILABLE_PDF_OK", "AVAILABLE_PDF_OPENED_NO_TEXT"}
+HIT_STATUSES = {
+    "HAS_ORIGINAL_DD1348",
+    "AVAILABLE_PDF_OK",
+    "AVAILABLE_PDF_OPENED_NO_TEXT",
+}
 
 
 def _load_status_map(path: Path) -> dict[str, str]:
