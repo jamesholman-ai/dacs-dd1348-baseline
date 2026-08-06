@@ -4,9 +4,9 @@ from pathlib import Path
 
 INPUT_DIR_NAME = "input"
 PREFERRED_NAMES = (
-    "QAReqsThatExistInDACS.xlsx",
     "identifiers.txt",
     "identifiers.csv",
+    "QAReqsThatExistInDACS.xlsx",
 )
 EXTENSIONS = (".xlsx", ".xlsm", ".csv", ".txt")
 

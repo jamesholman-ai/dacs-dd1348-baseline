@@ -185,7 +185,7 @@ def cmd_scan(args: argparse.Namespace, cfg: dict) -> int:
 
     efts_url = args.efts_url or cfg.get("efts_url") or DEFAULT_EFTS
     user_data = args.user_data_dir or Path(cfg.get("user_data_dir") or "user-data")
-    search_override = args.search_by or cfg.get("search_by") or "auto"
+    search_override = args.search_by or cfg.get("search_by") or "requisition"
 
     delay = (
         args.delay_seconds

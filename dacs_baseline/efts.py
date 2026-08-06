@@ -118,64 +118,119 @@ def open_list_search(page: Page, efts_base: str) -> None:
 
 
 def select_search_by(page: Page, mode: str) -> None:
-    """Select List Search radio: tcn | document | requisition."""
-    labels = {
-        "tcn": ["TCN"],
-        "document": ["Document", "Document Number", "Document Numbers", "Doc"],
-        "requisition": ["Requisition", "REQ", "RQSTN"],
+    """
+    Select List Search 'Search By' radio.
+
+    Locators from EFTS Katalon / efts-element-map.json (list search page):
+      - container: #searchBy
+      - requisition: #radio_REQ (same id used on Create Shipment for REQ)
+      - tcn: #radio_TCN
+      - labels: All | TCN | Requisition | Contract
+    """
+    mode = (mode or "requisition").strip().lower()
+    # Prefer stable EFTS element ids first
+    id_map = {
+        "requisition": ["radio_REQ", "radio_REQN", "radio_Requisition"],
+        "tcn": ["radio_TCN"],
+        "document": ["radio_REQ", "radio_DOC", "radio_Document"],  # legacy alias → REQ
+        "all": ["radio_ALL", "radio_0"],
+        "contract": ["radio_CTN", "radio_CONTRACT", "radio_Contract"],
     }
-    for label in labels.get(mode, ["TCN"]):
-        for sel in (
-            f"label:text-is('{label}')",
-            f"label:has-text('{label}')",
-            f"input[type='radio'][value='{label}' i]",
-            f"input[type='radio'][id*='{label}' i]",
-        ):
-            try:
-                loc = page.locator(sel).first
-                if loc.count() and loc.is_visible(timeout=1000):
-                    loc.click()
-                    print(f"[list-search] Search By = {label}")
-                    return
-            except Exception:
-                continue
+    for rid in id_map.get(mode, []):
+        try:
+            loc = page.locator(f"#{rid}").first
+            if loc.count():
+                loc.click(force=True)
+                print(f"[list-search] Search By = {mode} (#{rid})")
+                return
+        except Exception:
+            continue
+
+    # Radios / labels inside #searchBy (list-search map id)
+    label_text = {
+        "requisition": "Requisition",
+        "tcn": "TCN",
+        "document": "Requisition",
+        "all": "All",
+        "contract": "Contract",
+    }.get(mode, "Requisition")
+
+    selectors = [
+        f"#searchBy label:text-is('{label_text}')",
+        f"#searchBy label:has-text('{label_text}')",
+        f"#searchBy input[type='radio'][value='{label_text}' i]",
+        f"#searchBy input[type='radio'][value='REQ' i]",
+        f"#searchBy input[type='radio'][id*='REQ' i]",
+        f"label:text-is('{label_text}')",
+        f"label:has-text('{label_text}')",
+        f"input[type='radio'][value='{label_text}' i]",
+        f"input[type='radio'][id*='{label_text}' i]",
+    ]
+    if mode in {"requisition", "document"}:
+        selectors[0:0] = [
+            "#searchBy input[type='radio'][value='Requisition' i]",
+            "#searchBy input[type='radio'][value='REQ' i]",
+            "input[type='radio'][value='Requisition' i]",
+            "input[type='radio'][value='REQ' i]",
+        ]
+
+    for sel in selectors:
+        try:
+            loc = page.locator(sel).first
+            if loc.count() and loc.is_visible(timeout=1000):
+                loc.click()
+                print(f"[list-search] Search By = {label_text} ({sel})")
+                return
+        except Exception:
+            continue
     print(f"[list-search] WARNING: could not find Search By={mode}; leaving default")
 
 
 def upload_or_paste_ids(page: Page, upload_txt: Path, ids: list[str]) -> None:
-    file_input = page.locator("input[type='file']")
+    """
+    Prefer file upload via #fileInput (efts-element-map list search).
+    Fallback: paste into #docIds textarea.
+    """
+    # Ensure upload file exists (one ID per line)
+    upload_txt = Path(upload_txt)
+    if not upload_txt.exists():
+        upload_txt.parent.mkdir(parents=True, exist_ok=True)
+        upload_txt.write_text("\n".join(ids) + "\n", encoding="utf-8")
+
+    file_input = page.locator("#fileInput, input[type='file']")
     try:
         if file_input.count() == 0:
-            page.evaluate(
-                """() => {
-                const links = Array.from(document.querySelectorAll('a,button,span,label'));
-                const choose = links.find(el => {
-                  const t = (el.innerText || el.textContent || '').toLowerCase();
-                  return t.includes('choose') || t.includes('upload') || t.includes('replace');
-                });
-                if (choose) choose.click();
-            }"""
-            )
+            # Reveal via "choose from folder" / #fileSelectButton
+            for sel in ("#fileSelectButton", "a:has-text('choose from folder')", "text=choose from folder"):
+                try:
+                    btn = page.locator(sel).first
+                    if btn.count() and btn.is_visible(timeout=800):
+                        btn.click()
+                        break
+                except Exception:
+                    continue
             page.wait_for_timeout(500)
         if file_input.count():
             file_input.first.set_input_files(str(upload_txt.resolve()))
             page.wait_for_timeout(800)
-            print(f"[list-search] uploaded {upload_txt}")
+            print(f"[list-search] uploaded {upload_txt} via file input")
             return
     except Exception as exc:
-        print(f"[list-search] upload failed ({exc}); pasting into textarea")
+        print(f"[list-search] upload failed ({exc}); pasting into #docIds")
 
     area = page.locator(
-        "textarea, "
+        "#docIds, textarea, "
         "[placeholder*='Document' i], [placeholder*='TCN' i]"
     ).first
     area.wait_for(state="visible", timeout=15_000)
     area.fill("\n".join(ids))
+    print(f"[list-search] pasted {len(ids)} ids into document textarea")
 
 
 def click_search(page: Page) -> None:
     btn = page.locator(
-        "button:text-is('Search'), input[type='submit'][value*='Search' i], "
+        "#submitCriteriaBtn, button:text-is('Search'), "
+        "input[type='submit'][value*='Search' i], "
         "a.btn:text-is('Search'), button.btn:text-is('Search')"
     ).first
     btn.click()

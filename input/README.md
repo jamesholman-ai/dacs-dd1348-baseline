@@ -1,18 +1,17 @@
 # Input files
 
-Drop Jeff’s spreadsheet (or a `.txt` / `.csv` of identifiers) here.
+Drop Jeff’s spreadsheet here, then run `python -m dacs_baseline prep-ids` to
+refresh `identifiers.txt`. Scans prefer the **txt** for List Search upload.
 
-When you run `python -m dacs_baseline scan` with no `--input`, the tool picks from this folder:
+## List Search flow
 
-1. `QAReqsThatExistInDACS.xlsx` (preferred)
-2. `identifiers.txt` / `identifiers.csv`
-3. Otherwise the newest `.xlsx` / `.csv` / `.txt` in this folder
+1. Upload `identifiers.txt` (one shipment identifier per line) via **Or Upload a file** (`#fileInput`)
+2. Select **Search By → Requisition** (`#radio_REQ` / `#searchBy`)
+3. Click **Search** (`#submitCriteriaBtn`)
 
 ## Current files
 
 | File | Notes |
 |------|--------|
+| `identifiers.txt` | Unique shipment identifiers for List Search upload (**preferred**) |
 | `QAReqsThatExistInDACS.xlsx` | Source workbook (Shipment Identifier / RQSTN) |
-| `identifiers.txt` | Unique IDs extracted for List Search upload |
-
-Replace or add files as needed; no Downloads path required.

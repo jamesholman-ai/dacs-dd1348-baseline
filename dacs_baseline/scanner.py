@@ -9,6 +9,7 @@ from pathlib import Path
 from playwright.sync_api import BrowserContext, Page
 
 from . import efts
+from .input_path import input_dir
 from .spreadsheet import ShipmentRow, write_upload_txt
 from .throttle import Throttle
 
@@ -139,11 +140,13 @@ def run_baseline(
 ) -> dict:
     out_dir.mkdir(parents=True, exist_ok=True)
     ids = [r.identifier for r in rows]
-    upload = write_upload_txt(ids, out_dir / "list-search-upload.txt")
+    # Canonical upload list for List Search "Or Upload a file"
+    upload = write_upload_txt(ids, input_dir() / "identifiers.txt")
+    write_upload_txt(ids, out_dir / "list-search-upload.txt")
 
     efts.open_list_search(list_page, efts_base)
     efts.upload_or_paste_ids(list_page, upload, ids)
-    efts.select_search_by(list_page, search_by)
+    efts.select_search_by(list_page, search_by or "requisition")
     efts.click_search(list_page)
     expected = efts.wait_for_results(list_page, list_search_wait_seconds)
 

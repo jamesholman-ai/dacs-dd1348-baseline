@@ -12,11 +12,15 @@ Built for **gov-cloud Windows VMs with CAC**: uses installed **Chrome** + a pers
 
 ## Input folder
 
-Place Jeff’s spreadsheet (or identifier lists) in **`input/`**. With no `--input` flag, the scanner auto-picks:
+Place Jeff’s spreadsheet in **`input/`**, then keep **`input/identifiers.txt`**
+(one shipment ID per line) for List Search upload. With no `--input` flag:
 
-1. `input/QAReqsThatExistInDACS.xlsx`
-2. `input/identifiers.txt` / `identifiers.csv`
-3. Newest `.xlsx` / `.csv` / `.txt` in `input/`
+1. `input/identifiers.txt` (preferred — uploaded to List Search)
+2. `input/identifiers.csv`
+3. `input/QAReqsThatExistInDACS.xlsx`
+4. Newest `.xlsx` / `.csv` / `.txt` in `input/`
+
+Default **Search By** is **Requisition** (`#radio_REQ` from EFTS element map).
 
 ## Setup (on the VM)
 

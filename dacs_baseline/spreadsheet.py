@@ -129,8 +129,9 @@ def infer_search_by(rows: list[ShipmentRow], override: str = "auto") -> str:
     if key in {"tcn", "document", "requisition"}:
         return key
     types = {r.identifier_type.strip().upper() for r in rows if r.identifier_type}
+    # List Search radios: All | TCN | Requisition | Contract (see screenshot / EFTS map)
     if "RQSTN" in types or any(r.identifier.endswith("*") for r in rows):
-        return "document"
+        return "requisition"
     return "tcn"
 
 

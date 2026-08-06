@@ -9,6 +9,6 @@ batch_size: 0          # 0 = no batch pause
 batch_pause_seconds: 30
 list_search_wait_seconds: 900
 navigation_timeout_seconds: 300  # page.goto / navigation (5 min for gov-cloud lag)
-search_by: auto        # auto | tcn | document | requisition
-# Optional override; omit to auto-pick from ./input/
-# input: QAReqsThatExistInDACS.xlsx
+search_by: requisition  # List Search: All | TCN | Requisition | Contract (#radio_REQ)
+# Optional override; omit to auto-pick from ./input/ (prefers identifiers.txt)
+# input: identifiers.txt
