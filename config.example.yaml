@@ -9,3 +9,5 @@ batch_size: 0          # 0 = no batch pause
 batch_pause_seconds: 30
 list_search_wait_seconds: 900
 search_by: auto        # auto | tcn | document | requisition
+# Optional override; omit to auto-pick from ./input/
+# input: QAReqsThatExistInDACS.xlsx

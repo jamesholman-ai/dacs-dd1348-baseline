@@ -11,12 +11,12 @@ from playwright.sync_api import sync_playwright
 from . import __version__
 from .compare import compare_runs, write_compare_report
 from .efts import click_cac_if_present, dismiss_scip_modals, wait_for_efts_ready
+from .input_path import input_dir, resolve_input
 from .scanner import run_baseline
 from .spreadsheet import infer_search_by, load_identifiers
 from .throttle import Throttle
 
 
-DEFAULT_INPUT = Path(r"c:\Users\james.holman\Downloads\Copy of QAReqsThatExistInDACS.xlsx")
 DEFAULT_EFTS = "https://test.scip.dsca.mil/NewEftsWeb/"
 
 
@@ -54,7 +54,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--input",
         type=Path,
         default=None,
-        help="xlsx/csv/txt of shipment identifiers (default: Jeff QAReqs xlsx)",
+        help="xlsx/csv/txt of shipment identifiers (default: auto from ./input/)",
     )
     scan.add_argument(
         "--efts-url",
@@ -134,18 +134,32 @@ def build_parser() -> argparse.ArgumentParser:
 
     prep = sub.add_parser("prep-ids", help="Extract unique identifiers from spreadsheet to .txt")
     prep.add_argument("--input", type=Path, default=None)
-    prep.add_argument("--out", type=Path, default=Path("data/identifiers.txt"))
+    prep.add_argument(
+        "--out",
+        type=Path,
+        default=None,
+        help="Output txt (default: ./input/identifiers.txt)",
+    )
 
     return p
 
 
+def _resolve_src(args: argparse.Namespace, cfg: dict) -> Path:
+    try:
+        return resolve_input(args.input, cfg.get("input"))
+    except FileNotFoundError as exc:
+        raise SystemExit(str(exc)) from exc
+
+
 def cmd_prep(args: argparse.Namespace, cfg: dict) -> int:
-    src = args.input or Path(cfg.get("input") or DEFAULT_INPUT)
+    src = _resolve_src(args, cfg)
+    out = args.out or (input_dir() / "identifiers.txt")
     rows = load_identifiers(src, unique=True)
-    args.out.parent.mkdir(parents=True, exist_ok=True)
-    args.out.write_text("\n".join(r.identifier for r in rows) + "\n", encoding="utf-8")
+    out.parent.mkdir(parents=True, exist_ok=True)
+    out.write_text("\n".join(r.identifier for r in rows) + "\n", encoding="utf-8")
     search = infer_search_by(rows, cfg.get("search_by", "auto"))
-    print(f"Wrote {len(rows)} unique identifiers -> {args.out}")
+    print(f"Source: {src}")
+    print(f"Wrote {len(rows)} unique identifiers -> {out}")
     print(f"Inferred List Search mode: {search}")
     return 0
 
@@ -159,9 +173,7 @@ def cmd_compare(args: argparse.Namespace) -> int:
 
 
 def cmd_scan(args: argparse.Namespace, cfg: dict) -> int:
-    src = args.input or Path(cfg.get("input") or DEFAULT_INPUT)
-    if not src.exists():
-        raise SystemExit(f"Input not found: {src}")
+    src = _resolve_src(args, cfg)
 
     efts_url = args.efts_url or cfg.get("efts_url") or DEFAULT_EFTS
     user_data = args.user_data_dir or Path(cfg.get("user_data_dir") or "user-data")

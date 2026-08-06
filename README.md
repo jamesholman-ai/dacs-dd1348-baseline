@@ -2,13 +2,21 @@
 
 Standalone Playwright CLI that mirrors the EFTS Katalon **DACS Original DD1348 IRRD** baseline:
 
-1. Load shipment identifiers from Jeff’s spreadsheet (or txt/csv)
+1. Load shipment identifiers from `./input/` (or txt/csv/xlsx you pass)
 2. EFTS **Research → List Search** upload + Search
 3. Open each **Shipment Identifier** Details tab (pings DACS)
 4. Record whether Document Center `#originalDD1348irrd` returns a document vs **Unavailable**
 5. Re-run with the same inputs after the query deploy and **compare** hit rates
 
 Built for **gov-cloud Windows VMs with CAC**: uses installed **Chrome** + a persistent profile so Windows client certs work. You complete the PIN/cert prompt once per session.
+
+## Input folder
+
+Place Jeff’s spreadsheet (or identifier lists) in **`input/`**. With no `--input` flag, the scanner auto-picks:
+
+1. `input/QAReqsThatExistInDACS.xlsx`
+2. `input/identifiers.txt` / `identifiers.csv`
+3. Newest `.xlsx` / `.csv` / `.txt` in `input/`
 
 ## Setup (on the VM)
 
@@ -17,7 +25,6 @@ cd c:\Users\james.holman\git\dacs-dd1348-baseline
 python -m venv .venv
 .\.venv\Scripts\Activate.ps1
 pip install -r requirements.txt
-# Playwright needs Chrome channel only — no browser download required when using --channel chrome
 ```
 
 Optional config:
@@ -35,7 +42,7 @@ Copy-Item config.example.yaml config.yaml
 | `--batch-size N` | After every N opens, take a longer pause (`0` = off) |
 | `--batch-pause-seconds N` | Length of that batch pause (default 30) |
 
-Example gentle pacing for ~500 IDs:
+Example gentle pacing:
 
 ```powershell
 python -m dacs_baseline scan --label before `
@@ -44,20 +51,19 @@ python -m dacs_baseline scan --label before `
 
 ## Commands
 
-### Extract IDs from the spreadsheet
+### Extract IDs from the spreadsheet in `input/`
 
 ```powershell
-python -m dacs_baseline prep-ids `
-  --input "c:\Users\james.holman\Downloads\Copy of QAReqsThatExistInDACS.xlsx"
+python -m dacs_baseline prep-ids
+# writes input/identifiers.txt
 ```
 
-That workbook is ~463 unique **RQSTN** identifiers (column *Shipment Identifier*). List Search mode defaults to **document** when Identifier Type is RQSTN or IDs end with `*`.
+~462 unique **RQSTN** identifiers. List Search mode defaults to **document** when Identifier Type is RQSTN or IDs end with `*`.
 
 ### Baseline (before deploy)
 
 ```powershell
 python -m dacs_baseline scan --label before `
-  --input "c:\Users\james.holman\Downloads\Copy of QAReqsThatExistInDACS.xlsx" `
   --efts-url https://test.scip.dsca.mil/NewEftsWeb/ `
   --delay-seconds 2 --batch-size 25 --batch-pause-seconds 45
 ```
@@ -72,7 +78,6 @@ Chrome opens → complete CAC → scanner runs. Outputs under `reports/`:
 
 ```powershell
 python -m dacs_baseline scan --label after `
-  --input "c:\Users\james.holman\Downloads\Copy of QAReqsThatExistInDACS.xlsx" `
   --delay-seconds 2 --batch-size 25 --batch-pause-seconds 45
 ```
 
@@ -88,6 +93,7 @@ python -m dacs_baseline compare `
 
 ```powershell
 python -m dacs_baseline scan --label smoke --max 5 --delay-seconds 2
+# or: .\Run-Scan.ps1 -Label smoke
 ```
 
 ## Notes
@@ -97,3 +103,4 @@ python -m dacs_baseline scan --label smoke --max 5 --delay-seconds 2
 - Miss = `UNAVAILABLE`.
 - `--search-by tcn|document|requisition|auto` overrides List Search radio.
 - `--start-index` / `--max` slice the list for resume or sampling.
+- `--input path` still overrides `./input/` when you need a one-off file.
