@@ -45,10 +45,12 @@ def scan_one(
     context: BrowserContext,
     identifier: str,
     efts_base: str,
+    *,
+    details_tab_timeout_ms: int = 300_000,
 ) -> tuple[ScanResult, Page]:
     """
-    Click result (opens Details in a new tab) → stay on that tab →
-    read Original DD1348 IRRD (Click to Open vs Unavailable) → close tab →
+    Click result (opens Details in a new tab) → wait until that tab is up and
+    Document Center / Original DD1348 IRRD is populated → classify → close tab →
     return to List Search.
     """
     list_page = efts.return_to_list_search(context, list_page, efts_base)
@@ -57,34 +59,34 @@ def scan_one(
     details: Page | None = None
 
     try:
-        efts.click_shipment_identifier(list_page, identifier)
-        details = _wait_new_page(context, before, timeout_ms=30_000)
+        details, same_tab, list_page = _open_details_tab(
+            list_page,
+            context,
+            identifier,
+            before,
+            efts_base=efts_base,
+            timeout_ms=details_tab_timeout_ms,
+        )
         if details is None:
-            list_page.wait_for_timeout(1000)
-            if efts.is_details_page(list_page):
-                details = list_page
-                same_tab = True
-            else:
-                list_page = efts.return_to_list_search(context, list_page, efts_base)
-                return (
-                    ScanResult(
-                        identifier,
-                        "error",
-                        "Details tab did not open",
-                        "",
-                        "unknown",
-                        "",
-                    ),
-                    list_page,
-                )
+            list_page = efts.return_to_list_search(context, list_page, efts_base)
+            return (
+                ScanResult(
+                    identifier,
+                    "error",
+                    "Details tab did not open",
+                    "",
+                    "unknown",
+                    "",
+                ),
+                list_page,
+            )
 
         # Continue work on the Details tab that just opened
         details.bring_to_front()
         try:
-            details.wait_for_load_state("domcontentloaded", timeout=300_000)
+            details.wait_for_load_state("domcontentloaded", timeout=details_tab_timeout_ms)
         except Exception:
             pass
-        details.wait_for_timeout(800)
 
         if efts.is_efts_error_page(details):
             url = details.url or ""
@@ -95,25 +97,28 @@ def scan_one(
             )
 
         details_url = details.url or ""
-        try:
-            efts.ensure_details_ready(details, timeout_ms=90_000)
-        except Exception as exc:
+        print(
+            f"[scan] waiting for Details tab to populate "
+            f"(up to {details_tab_timeout_ms // 1000}s) for {identifier}..."
+        )
+        # Wait until Document Center is up AND IRRD shows Click to Open / Unavailable
+        irrd = efts.wait_for_irrd_ready(details, timeout_ms=details_tab_timeout_ms)
+        ui_label = (irrd.get("label") or "").strip()
+        detail = (irrd.get("detail") or "").strip()
+
+        if str(detail).startswith("DETAILS_NOT_READY"):
             list_page = _finish_details(context, list_page, details, same_tab, efts_base)
             return (
                 ScanResult(
                     identifier,
                     "error",
-                    f"DETAILS_NOT_READY: {_csv_safe(exc)}",
+                    _csv_safe(detail),
                     details_url,
                     "unknown",
                     "",
                 ),
                 list_page,
             )
-
-        irrd = efts.wait_for_irrd_ready(details, timeout_ms=60_000)
-        ui_label = (irrd.get("label") or "").strip()
-        detail = (irrd.get("detail") or "").strip()
 
         if irrd["state"] == "unavailable":
             list_page = _finish_details(context, list_page, details, same_tab, efts_base)
@@ -183,6 +188,58 @@ def _finish_details(
     return efts.return_to_list_search(context, list_page, efts_base)
 
 
+def _open_details_tab(
+    list_page: Page,
+    context: BrowserContext,
+    identifier: str,
+    before: set[Page],
+    *,
+    efts_base: str,
+    timeout_ms: int,
+) -> tuple[Page | None, bool, Page]:
+    """
+    Click the List Search result and wait until a Details tab (or same-tab
+    Details navigation) appears. Retries the click once if needed.
+    Returns (details_page_or_none, same_tab, list_page).
+    """
+    import time
+
+    end = time.time() + timeout_ms / 1000.0
+    pages_before = set(before)
+    clicked = False
+
+    def _try_click() -> None:
+        nonlocal clicked, pages_before, list_page
+        list_page = efts.return_to_list_search(context, list_page, efts_base)
+        pages_before = set(context.pages)
+        efts.click_shipment_identifier(list_page, identifier)
+        clicked = True
+
+    _try_click()
+    retried = False
+    while time.time() < end:
+        details = _wait_new_page(context, pages_before, timeout_ms=2_000)
+        if details is not None:
+            return details, False, list_page
+        # Same-tab navigation fallback
+        try:
+            if efts.is_details_page(list_page):
+                return list_page, True, list_page
+        except Exception:
+            pass
+        # One retry click mid-wait (gov-cloud sometimes drops the first)
+        remaining = end - time.time()
+        if not retried and remaining > 15 and clicked:
+            print(f"[scan] Details tab not yet open for {identifier}; retrying click...")
+            try:
+                _try_click()
+                retried = True
+            except Exception as exc:
+                print(f"[scan] retry click failed: {exc}")
+        time.sleep(0.25)
+    return None, False, list_page
+
+
 def _wait_new_page(
     context: BrowserContext, before: set[Page], timeout_ms: int
 ) -> Page | None:
@@ -193,7 +250,7 @@ def _wait_new_page(
         for p in context.pages:
             if p not in before and not p.is_closed():
                 try:
-                    p.wait_for_load_state("domcontentloaded", timeout=300_000)
+                    p.wait_for_load_state("domcontentloaded", timeout=60_000)
                 except Exception:
                     pass
                 return p
@@ -213,6 +270,7 @@ def run_baseline(
     list_search_wait_seconds: int,
     label: str = "baseline",
     midrun_cac_timeout_seconds: float = 300.0,
+    details_tab_timeout_seconds: float = 300.0,
 ) -> dict:
     # reports/dd1348-irrd/<label>/
     report_dir = out_dir / label if out_dir.name != label else out_dir
@@ -299,7 +357,13 @@ def run_baseline(
                     continue
                 found.add(key)
                 try:
-                    row, list_page = scan_one(list_page, context, ident, efts_base)
+                    row, list_page = scan_one(
+                        list_page,
+                        context,
+                        ident,
+                        efts_base,
+                        details_tab_timeout_ms=int(details_tab_timeout_seconds * 1000),
+                    )
                 except Exception as exc:
                     row = ScanResult(
                         ident, "error", f"ERROR: {exc}", "", "unknown", ""

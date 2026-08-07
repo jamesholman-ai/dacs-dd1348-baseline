@@ -60,6 +60,7 @@ class SetupDialog(tk.Toplevel):
             ("batch_size", "Batch size (0 = off)"),
             ("batch_pause_seconds", "Batch pause (seconds)"),
             ("midrun_cac_timeout_seconds", "Mid-run CAC wait (seconds)"),
+            ("details_tab_timeout_seconds", "Details tab populate wait (seconds)"),
         ]
         for i, (key, label) in enumerate(fields, start=1):
             ttk.Label(frm, text=label).grid(row=i, column=0, sticky="w", pady=3)
@@ -102,6 +103,7 @@ class SetupDialog(tk.Toplevel):
             elif key in {
                 "batch_size",
                 "midrun_cac_timeout_seconds",
+                "details_tab_timeout_seconds",
                 "cac_timeout_seconds",
                 "navigation_timeout_seconds",
             }:
@@ -269,6 +271,8 @@ class App(tk.Tk):
             str(self.settings.get("user_data_dir", "user-data")),
             "--midrun-cac-timeout-seconds",
             str(self.settings.get("midrun_cac_timeout_seconds", 300)),
+            "--details-tab-timeout-seconds",
+            str(self.settings.get("details_tab_timeout_seconds", 300)),
             "--cac-timeout-seconds",
             str(self.settings.get("cac_timeout_seconds", 600)),
             "--navigation-timeout-seconds",

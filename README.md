@@ -68,6 +68,19 @@ If a CAC / login window appears **again during** the scan, the tool waits up to
 **5 minutes** (`--midrun-cac-timeout-seconds 300`), then **stops**, **writes
 partial reports**, and records `early_stop_reason` in `summary.txt`.
 
+## Details tab wait
+
+After each List Search click, the tool waits for the Details tab to **open** and
+for Document Center / Original DD1348 IRRD to **populate** (Click to Open or
+Unavailable) before classifying:
+
+```powershell
+python -m dacs_baseline scan --label before --details-tab-timeout-seconds 300
+```
+
+Default is **300 seconds (5 minutes)**. Change it in first-run setup as
+**Details tab populate wait**, or in `config.yaml` / `user-settings.json`.
+
 ## Locked report files
 
 If Excel has `had-dd1348.csv` / `no-dd1348.csv` open, the tool writes

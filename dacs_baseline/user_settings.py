@@ -27,6 +27,7 @@ def default_settings(root: Path | None = None) -> dict[str, Any]:
         "batch_size": 25,
         "batch_pause_seconds": 45,
         "midrun_cac_timeout_seconds": 300,
+        "details_tab_timeout_seconds": 300,
         "cac_timeout_seconds": 600,
         "navigation_timeout_seconds": 300,
         "search_by": "tcn",

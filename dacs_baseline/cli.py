@@ -160,6 +160,16 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     scan.add_argument(
+        "--details-tab-timeout-seconds",
+        type=float,
+        default=None,
+        help=(
+            "After clicking a List Search result, wait this long for the Details "
+            "tab to open and Document Center / Original DD1348 to populate "
+            "(default: 300 = 5 minutes)"
+        ),
+    )
+    scan.add_argument(
         "--navigation-timeout-seconds",
         type=int,
         default=None,
@@ -298,6 +308,16 @@ def cmd_scan(args: argparse.Namespace, cfg: dict) -> int:
             )
         )
     )
+    details_tab_timeout = (
+        args.details_tab_timeout_seconds
+        if args.details_tab_timeout_seconds is not None
+        else float(
+            cfg.get(
+                "details_tab_timeout_seconds",
+                user.get("details_tab_timeout_seconds", 300),
+            )
+        )
+    )
     nav_timeout_ms = int(
         (
             args.navigation_timeout_seconds
@@ -351,6 +371,10 @@ def cmd_scan(args: argparse.Namespace, cfg: dict) -> int:
         f"batch_pause={batch_pause}s"
     )
     print(f"Mid-run CAC failsafe: {int(midrun_cac)}s then stop + publish")
+    print(
+        f"Details tab wait: {int(details_tab_timeout)}s "
+        "(open + Document Center / IRRD populated)"
+    )
     print(f"EFTS: {efts_url}")
     print("Chrome will open — complete CAC/cert PIN when prompted.")
 
@@ -393,6 +417,7 @@ def cmd_scan(args: argparse.Namespace, cfg: dict) -> int:
             list_search_wait_seconds=wait_sec,
             label=args.label,
             midrun_cac_timeout_seconds=midrun_cac,
+            details_tab_timeout_seconds=details_tab_timeout,
         )
         context.close()
 

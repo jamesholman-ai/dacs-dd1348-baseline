@@ -360,8 +360,11 @@ def is_details_page(page: Page) -> bool:
         return False
 
 
-def ensure_details_ready(page: Page, timeout_ms: int = 120_000) -> None:
-    """Wait until the Details tab shows Document Center / TCN DETAILS content."""
+def ensure_details_ready(page: Page, timeout_ms: int = 300_000) -> None:
+    """
+    Wait until the Details tab is up and Document Center / Original DD1348
+    content is present (not just a blank shell).
+    """
     import time
 
     end = time.time() + timeout_ms / 1000.0
@@ -370,8 +373,11 @@ def ensure_details_ready(page: Page, timeout_ms: int = 120_000) -> None:
         try:
             if page.is_closed():
                 raise RuntimeError("Details tab closed unexpectedly")
-            # Dismiss overlays that can hide Document Center
             dismiss_scip_modals(page)
+            try:
+                page.wait_for_load_state("domcontentloaded", timeout=5_000)
+            except Exception:
+                pass
             url = (page.url or "").lower()
             body = ""
             try:
@@ -381,45 +387,53 @@ def ensure_details_ready(page: Page, timeout_ms: int = 120_000) -> None:
                 page.wait_for_timeout(500)
                 continue
             upper = body.upper()
-            ready = (
-                "DOCUMENT CENTER" in upper
-                or "ORIGINAL DD1348" in upper
-                or "TCN DETAILS" in upper
-                or ("DETAILS" in upper and "IRRD" in upper)
-                or ("details" in url and len(body) > 200)
+            # Require real Details content — not an empty shell.
+            has_doc_center = "DOCUMENT CENTER" in upper
+            has_irrd_heading = "ORIGINAL DD1348" in upper
+            has_tcn_details = "TCN DETAILS" in upper or (
+                "DETAILS" in upper and "SHIPMENT" in upper
             )
+            ready = (has_doc_center and has_irrd_heading) or (
+                has_irrd_heading and ("CLICK TO OPEN" in upper or "UNAVAILABLE" in upper)
+            ) or (has_doc_center and has_tcn_details and len(body) > 400)
+
             if ready:
-                # Scroll Document Center into view if present
                 try:
                     page.evaluate(
                         """() => {
                         const nodes = Array.from(document.querySelectorAll('*'));
                         const hit = nodes.find(n => {
                           const t = (n.innerText || '').trim();
-                          return /^Document Center$/i.test(t) || /Original DD1348 IRRD/i.test(t);
+                          return /^Document Center$/i.test(t)
+                              || /Original DD1348 IRRD/i.test(t);
                         });
                         if (hit) hit.scrollIntoView({block: 'center'});
                     }"""
                     )
                 except Exception:
                     pass
-                page.wait_for_timeout(400)
+                page.wait_for_timeout(500)
                 return
+            last_err = (
+                f"url={url[:80]} body_len={len(body)} "
+                f"doc_center={has_doc_center} irrd={has_irrd_heading}"
+            )
         except Exception as exc:
             last_err = str(exc)
-        page.wait_for_timeout(500)
+        page.wait_for_timeout(750)
     raise TimeoutError(
-        f"Details page did not show Document Center / Original DD1348 within "
+        f"Details page did not populate Document Center / Original DD1348 within "
         f"{timeout_ms // 1000}s ({last_err})"
     )
 
 
-def wait_for_irrd_ready(page: Page, timeout_ms: int = 90_000) -> dict:
+def wait_for_irrd_ready(page: Page, timeout_ms: int = 300_000) -> dict:
     """Wait until Original DD1348 IRRD shows 'Click to Open' or 'Unavailable'."""
     import time
 
+    started = time.time()
     try:
-        ensure_details_ready(page, timeout_ms=min(timeout_ms, 120_000))
+        ensure_details_ready(page, timeout_ms=timeout_ms)
     except Exception as exc:
         return {
             "state": "missing",
@@ -428,7 +442,10 @@ def wait_for_irrd_ready(page: Page, timeout_ms: int = 90_000) -> dict:
             "label": "",
         }
 
-    end = time.time() + timeout_ms / 1000.0
+    remaining_ms = max(30_000, int(timeout_ms - (time.time() - started) * 1000))
+    # Cap remaining so total stay near the requested timeout
+    remaining_ms = min(remaining_ms, timeout_ms)
+    end = time.time() + remaining_ms / 1000.0
     last = {"state": "missing", "detail": "IRRD_TIMEOUT", "href": "", "label": ""}
     while time.time() < end:
         last = inspect_original_dd1348_irrd(page)
