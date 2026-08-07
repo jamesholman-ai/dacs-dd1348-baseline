@@ -1,4 +1,4 @@
-# Fast helpers for the gov-cloud VM. Edit throttle flags as needed.
+# Fast helpers for the gov-cloud VM. Edit throttle / line filters as needed.
 
 param(
   [ValidateSet('before','after','smoke','pick')]
@@ -7,8 +7,11 @@ param(
   [int]$BatchSize = 25,
   [double]$BatchPauseSeconds = 45,
   [int]$Max = 0,
+  [string]$Lines = '',
+  [string]$SkipLines = '',
   [switch]$NoPick,
-  [switch]$Sample10
+  [switch]$Sample10,
+  [switch]$Gui
 )
 
 $ErrorActionPreference = 'Stop'
@@ -17,6 +20,11 @@ Set-Location $PSScriptRoot
 if (-not (Test-Path .\.venv\Scripts\python.exe)) {
   python -m venv .venv
   .\.venv\Scripts\python.exe -m pip install -r requirements.txt
+}
+
+if ($Gui) {
+  & .\.venv\Scripts\python.exe -m dacs_baseline
+  exit $LASTEXITCODE
 }
 
 # Default: open a file picker so you choose full-462, sample-10, etc.
@@ -51,6 +59,8 @@ if ($Sample10 -or $Label -eq 'smoke') {
 }
 
 if ($Max -gt 0) { $argsList += @('--max', "$Max") }
+if ($Lines) { $argsList += @('--lines', $Lines) }
+if ($SkipLines) { $argsList += @('--skip-lines', $SkipLines) }
 
 Write-Host "Running: python $($argsList -join ' ')"
 & .\.venv\Scripts\python.exe @argsList

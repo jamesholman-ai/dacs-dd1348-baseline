@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import csv
-import shutil
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -9,7 +8,9 @@ from pathlib import Path
 from playwright.sync_api import BrowserContext, Page
 
 from . import efts
+from .cac_guard import wait_out_midrun_cac
 from .input_path import input_dir
+from .reporting import safe_copy, safe_write_text
 from .spreadsheet import ShipmentRow, write_upload_txt
 from .throttle import Throttle
 
@@ -211,6 +212,7 @@ def run_baseline(
     throttle: Throttle,
     list_search_wait_seconds: int,
     label: str = "baseline",
+    midrun_cac_timeout_seconds: float = 300.0,
 ) -> dict:
     # reports/dd1348-irrd/<label>/
     report_dir = out_dir / label if out_dir.name != label else out_dir
@@ -235,6 +237,8 @@ def run_baseline(
 
     hit_count = unavailable_count = error_count = scanned = 0
     found: set[str] = set()
+    early_stop_reason = ""
+    stopped_early = False
 
     with (
         all_path.open("w", encoding="utf-8", newline="") as rf,
@@ -258,11 +262,38 @@ def run_baseline(
 
         page_num = 1
         more = True
-        while more:
-            list_page = efts.return_to_list_search(context, list_page, efts_base)
+        while more and not stopped_early:
+            # Mid-run CAC failsafe (not the initial login)
+            if not wait_out_midrun_cac(
+                context, timeout_seconds=midrun_cac_timeout_seconds
+            ):
+                early_stop_reason = (
+                    f"Mid-run CAC/login prompt did not clear within "
+                    f"{int(midrun_cac_timeout_seconds)} seconds. "
+                    "Partial results published."
+                )
+                stopped_early = True
+                break
+
+            try:
+                list_page = efts.return_to_list_search(context, list_page, efts_base)
+            except Exception as exc:
+                if not wait_out_midrun_cac(
+                    context, timeout_seconds=midrun_cac_timeout_seconds
+                ):
+                    early_stop_reason = (
+                        f"Lost List Search during mid-run CAC challenge "
+                        f"({exc}). Partial results published."
+                    )
+                    stopped_early = True
+                    break
+                list_page = efts.return_to_list_search(context, list_page, efts_base)
+
             page_ids = efts.collect_shipment_identifiers(list_page)
             print(f"[scan] page {page_num}: {len(page_ids)} shipment identifiers")
             for ident in page_ids:
+                if stopped_early:
+                    break
                 key = ident.upper()
                 if key in found:
                     continue
@@ -273,7 +304,34 @@ def run_baseline(
                     row = ScanResult(
                         ident, "error", f"ERROR: {exc}", "", "unknown", ""
                     )
-                    list_page = efts.return_to_list_search(context, list_page, efts_base)
+                    try:
+                        list_page = efts.return_to_list_search(
+                            context, list_page, efts_base
+                        )
+                    except Exception:
+                        if not wait_out_midrun_cac(
+                            context, timeout_seconds=midrun_cac_timeout_seconds
+                        ):
+                            early_stop_reason = (
+                                f"Mid-run CAC/login during scan of {ident}; "
+                                f"did not clear within "
+                                f"{int(midrun_cac_timeout_seconds)}s. "
+                                "Partial results published."
+                            )
+                            # still record this row below, then stop
+                            stopped_early = True
+
+                # After each item, re-check CAC (skip if already aborting)
+                if not stopped_early and not wait_out_midrun_cac(
+                    context, timeout_seconds=midrun_cac_timeout_seconds
+                ):
+                    early_stop_reason = (
+                        f"Mid-run CAC/login after scanning {ident}; "
+                        f"did not clear within "
+                        f"{int(midrun_cac_timeout_seconds)}s. "
+                        "Partial results published."
+                    )
+                    stopped_early = True
 
                 scanned += 1
                 csv_row = [
@@ -304,8 +362,12 @@ def run_baseline(
                     f"dd1348={row.has_original_dd1348} ui='{row.ui_label}' "
                     f"status={row.status} detail={_csv_safe(row.detail)[:120]}"
                 )
+                if stopped_early:
+                    break
                 throttle.after_item(scanned)
 
+            if stopped_early:
+                break
             if efts.has_next_page(list_page):
                 more = efts.go_to_next_page(list_page)
                 page_num += 1
@@ -313,44 +375,51 @@ def run_baseline(
                 more = False
 
         not_found = 0
-        for ident in ids:
-            if ident.upper() not in found:
-                not_found += 1
-                results.writerow(
-                    [ident, "unknown", "", "NOT_IN_LIST_SEARCH_RESULTS", "", ""]
-                )
+        if not stopped_early:
+            for ident in ids:
+                if ident.upper() not in found:
+                    not_found += 1
+                    results.writerow(
+                        [ident, "unknown", "", "NOT_IN_LIST_SEARCH_RESULTS", "", ""]
+                    )
+        else:
+            for ident in ids:
+                if ident.upper() not in found:
+                    not_found += 1
+                    results.writerow(
+                        [ident, "unknown", "", "NOT_SCANNED_EARLY_STOP", "", ""]
+                    )
 
-    # Stable "latest" copies + human summary
-    latest_all = report_dir / "all-results.csv"
-    latest_had = report_dir / "had-dd1348.csv"
-    latest_no = report_dir / "no-dd1348.csv"
-    latest_summary = report_dir / "summary.txt"
-    shutil.copyfile(all_path, latest_all)
-    shutil.copyfile(had_path, latest_had)
-    shutil.copyfile(no_path, latest_no)
+    # Stable "latest" copies + human summary (tolerate locked files)
+    latest_all = safe_copy(all_path, report_dir / "all-results.csv")
+    latest_had = safe_copy(had_path, report_dir / "had-dd1348.csv")
+    latest_no = safe_copy(no_path, report_dir / "no-dd1348.csv")
 
-    summary_text = "\n".join(
-        [
-            "DACS Original DD1348 IRRD report",
-            f"label: {label}",
-            f"search_by: {search_by or 'tcn'}",
-            f"uploaded: {len(ids)}",
-            f"list_search_results: {expected}",
-            f"scanned: {scanned}",
-            f"had_dd1348 (Click to Open): {hit_count}",
-            f"no_dd1348 (Unavailable): {unavailable_count}",
-            f"errors_or_unclear: {error_count}",
-            f"not_in_results: {not_found}",
-            f"hit_rate: {(hit_count / scanned) if scanned else 0.0:.1%}",
-            "",
-            f"had-dd1348: {latest_had}",
-            f"no-dd1348:  {latest_no}",
-            f"all-results: {latest_all}",
-        ]
-    )
-    summary_path.write_text(summary_text + "\n", encoding="utf-8")
-    latest_summary.write_text(summary_text + "\n", encoding="utf-8")
+    summary_lines = [
+        "DACS Original DD1348 IRRD report",
+        f"label: {label}",
+        f"search_by: {search_by or 'tcn'}",
+        f"uploaded: {len(ids)}",
+        f"list_search_results: {expected}",
+        f"scanned: {scanned}",
+        f"had_dd1348 (Click to Open): {hit_count}",
+        f"no_dd1348 (Unavailable): {unavailable_count}",
+        f"errors_or_unclear: {error_count}",
+        f"not_in_results: {not_found}",
+        f"hit_rate: {(hit_count / scanned) if scanned else 0.0:.1%}",
+        f"stopped_early: {stopped_early}",
+        f"early_stop_reason: {early_stop_reason or '(none)'}",
+        "",
+        f"had-dd1348: {latest_had}",
+        f"no-dd1348:  {latest_no}",
+        f"all-results: {latest_all}",
+    ]
+    summary_text = "\n".join(summary_lines)
+    summary_path = safe_write_text(summary_path, summary_text + "\n")
+    latest_summary = safe_write_text(report_dir / "summary.txt", summary_text + "\n")
     print(summary_text)
+    if early_stop_reason:
+        print(f"[scan] EARLY STOP: {early_stop_reason}")
 
     return {
         "label": label,
@@ -363,6 +432,8 @@ def run_baseline(
         "errors": error_count,
         "not_in_results": not_found,
         "hit_rate": (hit_count / scanned) if scanned else 0.0,
+        "stopped_early": stopped_early,
+        "early_stop_reason": early_stop_reason,
         "had_dd1348_file": str(latest_had),
         "no_dd1348_file": str(latest_no),
         "all_results_file": str(latest_all),

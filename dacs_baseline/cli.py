@@ -13,9 +13,11 @@ from .compare import compare_runs, write_compare_report
 from .efts import click_cac_if_present, dismiss_scip_modals, wait_for_efts_ready
 from .file_picker import pick_input_file
 from .input_path import default_identifiers_path, input_dir, resolve_input
+from .line_select import apply_line_filters
 from .scanner import run_baseline
 from .spreadsheet import infer_search_by, load_identifiers
 from .throttle import Throttle
+from .user_settings import load_settings
 
 
 DEFAULT_EFTS = "https://test.scip.dsca.mil/NewEftsWeb/"
@@ -96,6 +98,16 @@ def build_parser() -> argparse.ArgumentParser:
     scan.add_argument("--start-index", type=int, default=0, help="Skip first N identifiers")
     scan.add_argument("--max", type=int, default=None, help="Only scan first N after start-index")
     scan.add_argument(
+        "--lines",
+        default=None,
+        help='Only these 1-based lines from the loaded list (e.g. "5-8" or "1,3,10")',
+    )
+    scan.add_argument(
+        "--skip-lines",
+        default=None,
+        help='Skip these 1-based lines (e.g. "2,4" or "10-12")',
+    )
+    scan.add_argument(
         "--delay-seconds",
         type=float,
         default=None,
@@ -135,7 +147,17 @@ def build_parser() -> argparse.ArgumentParser:
         "--cac-timeout-seconds",
         type=int,
         default=600,
-        help="How long to wait for operator CAC PIN / cert selection",
+        help="How long to wait for initial operator CAC PIN / cert selection",
+    )
+    scan.add_argument(
+        "--midrun-cac-timeout-seconds",
+        type=float,
+        default=None,
+        help=(
+            "If a CAC/login prompt appears mid-scan (not the initial login), "
+            "wait this many seconds then stop and publish partial results "
+            "(default: 300 = 5 minutes)"
+        ),
     )
     scan.add_argument(
         "--navigation-timeout-seconds",
@@ -230,58 +252,110 @@ def cmd_compare(args: argparse.Namespace) -> int:
 
 def cmd_scan(args: argparse.Namespace, cfg: dict) -> int:
     src = _resolve_src(args, cfg)
+    user = load_settings()
 
-    efts_url = args.efts_url or cfg.get("efts_url") or DEFAULT_EFTS
-    user_data = args.user_data_dir or Path(cfg.get("user_data_dir") or "user-data")
-    search_override = args.search_by or cfg.get("search_by") or "tcn"
+    efts_url = (
+        args.efts_url
+        or cfg.get("efts_url")
+        or user.get("efts_url")
+        or DEFAULT_EFTS
+    )
+    user_data = args.user_data_dir or Path(
+        cfg.get("user_data_dir") or user.get("user_data_dir") or "user-data"
+    )
+    search_override = args.search_by or cfg.get("search_by") or user.get("search_by") or "tcn"
+    out_dir = args.out_dir
+    if str(out_dir) == str(Path("reports") / "dd1348-irrd") and user.get("reports_dir"):
+        out_dir = Path(user["reports_dir"])
 
     delay = (
         args.delay_seconds
         if args.delay_seconds is not None
-        else float(cfg.get("delay_seconds", 2.0))
+        else float(cfg.get("delay_seconds", user.get("delay_seconds", 2.0)))
     )
     batch_size = (
-        args.batch_size if args.batch_size is not None else int(cfg.get("batch_size", 0))
+        args.batch_size
+        if args.batch_size is not None
+        else int(cfg.get("batch_size", user.get("batch_size", 0)))
     )
     batch_pause = (
         args.batch_pause_seconds
         if args.batch_pause_seconds is not None
-        else float(cfg.get("batch_pause_seconds", 30))
+        else float(cfg.get("batch_pause_seconds", user.get("batch_pause_seconds", 30)))
     )
     wait_sec = (
         args.list_search_wait_seconds
         if args.list_search_wait_seconds is not None
         else int(cfg.get("list_search_wait_seconds", 900))
     )
+    midrun_cac = (
+        args.midrun_cac_timeout_seconds
+        if args.midrun_cac_timeout_seconds is not None
+        else float(
+            cfg.get(
+                "midrun_cac_timeout_seconds",
+                user.get("midrun_cac_timeout_seconds", 300),
+            )
+        )
+    )
     nav_timeout_ms = int(
         (
             args.navigation_timeout_seconds
             if args.navigation_timeout_seconds is not None
-            else cfg.get("navigation_timeout_seconds", DEFAULT_NAV_TIMEOUT_MS // 1000)
+            else cfg.get(
+                "navigation_timeout_seconds",
+                user.get("navigation_timeout_seconds", DEFAULT_NAV_TIMEOUT_MS // 1000),
+            )
         )
     ) * 1000
 
-    rows = load_identifiers(src, unique=True)
-    if args.start_index:
-        rows = rows[args.start_index :]
-    if args.max is not None:
-        rows = rows[: args.max]
+    # Keep file line numbers meaningful when --lines / --skip-lines are used
+    keep_file_order = bool(args.lines or args.skip_lines)
+    rows = load_identifiers(src, unique=not keep_file_order)
+    before_count = len(rows)
+    rows = apply_line_filters(
+        rows,
+        start_index=args.start_index or 0,
+        max_count=args.max,
+        lines=args.lines,
+        skip_lines=args.skip_lines,
+    )
+    if keep_file_order:
+        # Dedupe after line selection so "line 5" matches the file
+        seen: set[str] = set()
+        deduped = []
+        for r in rows:
+            key = r.identifier.upper()
+            if key in seen:
+                continue
+            seen.add(key)
+            deduped.append(r)
+        rows = deduped
     if not rows:
-        raise SystemExit("No identifiers to scan")
+        raise SystemExit("No identifiers to scan after line filters")
 
     search_by = infer_search_by(rows, search_override)
     throttle = Throttle(delay, batch_size, batch_pause)
 
     print(f"Input: {src}")
-    print(f"Identifiers: {len(rows)} | search-by: {search_by} | label: {args.label}")
+    print(
+        f"Identifiers: {len(rows)} (from {before_count} loaded) | "
+        f"search-by: {search_by} | label: {args.label}"
+    )
+    if args.lines:
+        print(f"Lines include: {args.lines}")
+    if args.skip_lines:
+        print(f"Lines skip: {args.skip_lines}")
     print(
         f"Throttle: delay={delay}s batch_size={batch_size} "
         f"batch_pause={batch_pause}s"
     )
+    print(f"Mid-run CAC failsafe: {int(midrun_cac)}s then stop + publish")
     print(f"EFTS: {efts_url}")
     print("Chrome will open — complete CAC/cert PIN when prompted.")
 
     user_data.mkdir(parents=True, exist_ok=True)
+    out_dir.mkdir(parents=True, exist_ok=True)
 
     with sync_playwright() as pw:
         # System Chrome picks up Windows CAC / client certificates.
@@ -314,10 +388,11 @@ def cmd_scan(args: argparse.Namespace, cfg: dict) -> int:
             efts_base=efts_url,
             rows=rows,
             search_by=search_by,
-            out_dir=args.out_dir,
+            out_dir=out_dir,
             throttle=throttle,
             list_search_wait_seconds=wait_sec,
             label=args.label,
+            midrun_cac_timeout_seconds=midrun_cac,
         )
         context.close()
 
@@ -326,6 +401,12 @@ def cmd_scan(args: argparse.Namespace, cfg: dict) -> int:
 
 
 def main(argv: list[str] | None = None) -> int:
+    # Double-click / no-args → GUI launcher
+    if argv is None and len(sys.argv) == 1:
+        from .app import main as app_main
+
+        return app_main()
+
     parser = build_parser()
     args = parser.parse_args(argv)
     cfg_path = args.config if args.config.exists() else None

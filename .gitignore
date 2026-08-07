@@ -4,6 +4,10 @@ __pycache__/
 venv/
 .env
 config.yaml
+user-settings.json
+dist/
+build/
+*.spec
 reports/*
 !reports/dd1348-irrd/
 !reports/dd1348-irrd/README.md

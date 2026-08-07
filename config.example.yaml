@@ -1,4 +1,5 @@
 # Copy to config.yaml and adjust for your VM.
+# Prefer Start-DACS-Baseline.bat first-run setup (user-settings.json) for paths.
 efts_url: https://test.scip.dsca.mil/NewEftsWeb/
 user_data_dir: ./user-data
 headless: false
@@ -7,6 +8,8 @@ batch_size: 0
 batch_pause_seconds: 30
 list_search_wait_seconds: 900
 navigation_timeout_seconds: 300
+# Mid-run CAC/login: wait this long, then stop and publish partial results
+midrun_cac_timeout_seconds: 300
 search_by: tcn
 # Full 462-ID list (do not replace with smoke subsets)
 input: identifiers-full-462.txt
