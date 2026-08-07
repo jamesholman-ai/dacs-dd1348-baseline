@@ -11,6 +11,16 @@ from . import efts
 from .cac_guard import wait_out_midrun_cac
 from .input_path import input_dir
 from .reporting import safe_copy, safe_write_text
+from .run_state import (
+    completed_identifiers,
+    find_resumable_report,
+    load_result_rows,
+    load_state,
+    recount_from_rows,
+    resolve_report_dir,
+    resolve_report_name,
+    save_state,
+)
 from .spreadsheet import ShipmentRow, write_upload_txt
 from .throttle import Throttle
 
@@ -269,14 +279,91 @@ def run_baseline(
     throttle: Throttle,
     list_search_wait_seconds: int,
     label: str = "baseline",
+    report_name: str | None = None,
+    resume_from: str | None = None,
     midrun_cac_timeout_seconds: float = 300.0,
     details_tab_timeout_seconds: float = 300.0,
 ) -> dict:
-    # reports/dd1348-irrd/<label>/
-    report_dir = out_dir / label if out_dir.name != label else out_dir
+    """
+    Run (or resume) a baseline scan.
+
+    Report folder: out_dir / <report_name>
+    If report_name is empty, a timestamp folder is used.
+    Resume loads prior CSV/state, skips completed IDs, and updates the same folder.
+    """
+    prior_rows: list[dict[str, str]] = []
+    prior_ids: list[str] = []
+    resumed = False
+
+    if resume_from is not None:
+        report_dir = find_resumable_report(out_dir, resume_from)
+        state = load_state(report_dir) or {}
+        report_name = report_dir.name
+        label = str(state.get("label") or label)
+        prior_ids = [str(x) for x in (state.get("planned_identifiers") or [])]
+        prior_rows = load_result_rows(report_dir / "all-results.csv")
+        if not prior_rows:
+            # try stamped files
+            stamped = sorted(report_dir.glob("all-results_*.csv"))
+            if stamped:
+                prior_rows = load_result_rows(stamped[-1])
+        resumed = True
+        print(f"[resume] Continuing report: {report_dir}")
+    else:
+        name = resolve_report_name(report_name)
+        report_dir = resolve_report_dir(out_dir, name)
+        report_name = report_dir.name
+
     report_dir.mkdir(parents=True, exist_ok=True)
-    ids = [r.identifier for r in rows]
-    # Upload copy for this run only — do not overwrite identifiers-full-462.txt
+
+    # Planned identifier list (full test scope)
+    if resumed and prior_ids:
+        planned = prior_ids
+    else:
+        planned = [r.identifier for r in rows]
+
+    done = completed_identifiers(prior_rows)
+    counts = recount_from_rows(prior_rows)
+    remaining_rows = [
+        r for r in rows if r.identifier.upper() not in done
+    ]
+    # If resume used stored planned list and current rows differ, prefer remaining from planned
+    if resumed and prior_ids:
+        remaining_ids = [i for i in planned if i.upper() not in done]
+        by_id = {r.identifier.upper(): r for r in rows}
+        remaining_rows = []
+        for ident in remaining_ids:
+            if ident.upper() in by_id:
+                remaining_rows.append(by_id[ident.upper()])
+            else:
+                remaining_rows.append(
+                    ShipmentRow(ident, None, "TCN", 0)
+                )
+
+    if resumed and not remaining_rows:
+        print("[resume] Nothing left to scan — report already complete.")
+        summary = _write_final_reports(
+            report_dir=report_dir,
+            label=label,
+            report_name=report_name,
+            search_by=search_by or "tcn",
+            planned=planned,
+            prior_rows=prior_rows,
+            new_rows=[],
+            expected=0,
+            stopped_early=False,
+            early_stop_reason="",
+            resumed=True,
+        )
+        return summary
+
+    ids = [r.identifier for r in remaining_rows]
+    print(
+        f"[report] name={report_name} dir={report_dir} "
+        f"planned={len(planned)} already_done={len(done)} remaining={len(ids)}"
+        + (" (resume)" if resumed else "")
+    )
+
     upload = write_upload_txt(ids, report_dir / "list-search-upload.txt")
     working = input_dir() / "identifiers.txt"
     write_upload_txt(ids, working)
@@ -288,15 +375,28 @@ def run_baseline(
     expected = efts.wait_for_results(list_page, list_search_wait_seconds)
 
     stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    # On resume, keep writing into the live "latest" files and a new stamp snapshot
     all_path = report_dir / f"all-results_{stamp}.csv"
     had_path = report_dir / f"had-dd1348_{stamp}.csv"
     no_path = report_dir / f"no-dd1348_{stamp}.csv"
-    summary_path = report_dir / f"summary_{stamp}.txt"
 
-    hit_count = unavailable_count = error_count = scanned = 0
-    found: set[str] = set()
+    hit_count = counts["hits"]
+    unavailable_count = counts["unavailable"]
+    error_count = counts["errors"]
+    scanned = counts["scanned"]
+    found: set[str] = set(done)
     early_stop_reason = ""
     stopped_early = False
+    new_result_rows: list[list[str]] = []
+
+    header = [
+        "identifier",
+        "has_original_dd1348",
+        "ui_label",
+        "status",
+        "detail",
+        "detailsUrl",
+    ]
 
     with (
         all_path.open("w", encoding="utf-8", newline="") as rf,
@@ -306,22 +406,34 @@ def run_baseline(
         results = csv.writer(rf)
         had = csv.writer(hf)
         no = csv.writer(uf)
-        header = [
-            "identifier",
-            "has_original_dd1348",
-            "ui_label",
-            "status",
-            "detail",
-            "detailsUrl",
-        ]
         results.writerow(header)
         had.writerow(header)
         no.writerow(header)
 
+        # Seed stamp files with prior completed rows so the snapshot is complete
+        for prow in prior_rows:
+            status = (prow.get("status") or "").strip()
+            if status.upper() == "NOT_SCANNED_EARLY_STOP":
+                continue
+            csv_row = [
+                prow.get("identifier", ""),
+                prow.get("has_original_dd1348", ""),
+                prow.get("ui_label", ""),
+                prow.get("status", ""),
+                prow.get("detail", ""),
+                prow.get("detailsUrl", ""),
+            ]
+            results.writerow(csv_row)
+            new_result_rows.append(csv_row)
+            has = (prow.get("has_original_dd1348") or "").strip().lower()
+            if has == "yes" or status in HIT_STATUSES:
+                had.writerow(csv_row)
+            elif has == "no" or status == "UNAVAILABLE":
+                no.writerow(csv_row)
+
         page_num = 1
         more = True
         while more and not stopped_early:
-            # Mid-run CAC failsafe (not the initial login)
             if not wait_out_midrun_cac(
                 context, timeout_seconds=midrun_cac_timeout_seconds
             ):
@@ -382,10 +494,8 @@ def run_baseline(
                                 f"{int(midrun_cac_timeout_seconds)}s. "
                                 "Partial results published."
                             )
-                            # still record this row below, then stop
                             stopped_early = True
 
-                # After each item, re-check CAC (skip if already aborting)
                 if not stopped_early and not wait_out_midrun_cac(
                     context, timeout_seconds=midrun_cac_timeout_seconds
                 ):
@@ -407,6 +517,7 @@ def run_baseline(
                     _csv_safe(row.details_url),
                 ]
                 results.writerow(csv_row)
+                new_result_rows.append(csv_row)
 
                 if row.has_original_dd1348 == "yes" or row.status in HIT_STATUSES:
                     hit_count += 1
@@ -421,8 +532,11 @@ def run_baseline(
                 hf.flush()
                 uf.flush()
 
+                # Live update latest CSVs after each item (helps resume mid-crash)
+                _write_live_csvs(report_dir, header, new_result_rows, planned, found, stopped_early=False)
+
                 print(
-                    f"[scan] {scanned}/{expected} {row.identifier} "
+                    f"[scan] {scanned}/{expected + counts['scanned']} {row.identifier} "
                     f"dd1348={row.has_original_dd1348} ui='{row.ui_label}' "
                     f"status={row.status} detail={_csv_safe(row.detail)[:120]}"
                 )
@@ -440,54 +554,89 @@ def run_baseline(
 
         not_found = 0
         if not stopped_early:
-            for ident in ids:
+            for ident in planned:
                 if ident.upper() not in found:
                     not_found += 1
-                    results.writerow(
-                        [ident, "unknown", "", "NOT_IN_LIST_SEARCH_RESULTS", "", ""]
-                    )
+                    csv_row = [ident, "unknown", "", "NOT_IN_LIST_SEARCH_RESULTS", "", ""]
+                    results.writerow(csv_row)
+                    new_result_rows.append(csv_row)
         else:
-            for ident in ids:
+            for ident in planned:
                 if ident.upper() not in found:
                     not_found += 1
-                    results.writerow(
-                        [ident, "unknown", "", "NOT_SCANNED_EARLY_STOP", "", ""]
-                    )
+                    csv_row = [ident, "unknown", "", "NOT_SCANNED_EARLY_STOP", "", ""]
+                    results.writerow(csv_row)
+                    new_result_rows.append(csv_row)
 
-    # Stable "latest" copies + human summary (tolerate locked files)
     latest_all = safe_copy(all_path, report_dir / "all-results.csv")
     latest_had = safe_copy(had_path, report_dir / "had-dd1348.csv")
     latest_no = safe_copy(no_path, report_dir / "no-dd1348.csv")
 
+    save_state(
+        report_dir,
+        {
+            "report_name": report_name,
+            "label": label,
+            "search_by": search_by or "tcn",
+            "planned_identifiers": planned,
+            "completed_identifiers": sorted(found),
+            "stopped_early": stopped_early,
+            "early_stop_reason": early_stop_reason,
+            "resumed": resumed,
+            "updated_at": datetime.now().isoformat(timespec="seconds"),
+            "scanned": scanned,
+            "hits": hit_count,
+            "unavailable": unavailable_count,
+            "errors": error_count,
+        },
+    )
+
     summary_lines = [
         "DACS Original DD1348 IRRD report",
+        f"report_name: {report_name}",
         f"label: {label}",
+        f"resumed: {resumed}",
         f"search_by: {search_by or 'tcn'}",
-        f"uploaded: {len(ids)}",
+        f"planned: {len(planned)}",
+        f"uploaded_this_pass: {len(ids)}",
         f"list_search_results: {expected}",
         f"scanned: {scanned}",
         f"had_dd1348 (Click to Open): {hit_count}",
         f"no_dd1348 (Unavailable): {unavailable_count}",
         f"errors_or_unclear: {error_count}",
-        f"not_in_results: {not_found}",
+        f"not_in_results_or_remaining: {not_found}",
         f"hit_rate: {(hit_count / scanned) if scanned else 0.0:.1%}",
         f"stopped_early: {stopped_early}",
         f"early_stop_reason: {early_stop_reason or '(none)'}",
         "",
+        f"report_dir: {report_dir}",
         f"had-dd1348: {latest_had}",
         f"no-dd1348:  {latest_no}",
         f"all-results: {latest_all}",
     ]
+    if stopped_early:
+        summary_lines.extend(
+            [
+                "",
+                "To resume this test:",
+                f"  python -m dacs_baseline scan --resume \"{report_name}\"",
+                f"  or: python -m dacs_baseline scan --resume \"{report_dir}\"",
+            ]
+        )
     summary_text = "\n".join(summary_lines)
-    summary_path = safe_write_text(summary_path, summary_text + "\n")
+    summary_path = safe_write_text(report_dir / f"summary_{stamp}.txt", summary_text + "\n")
     latest_summary = safe_write_text(report_dir / "summary.txt", summary_text + "\n")
     print(summary_text)
     if early_stop_reason:
         print(f"[scan] EARLY STOP: {early_stop_reason}")
+        print(f"[scan] Resume with: python -m dacs_baseline scan --resume \"{report_name}\"")
 
     return {
         "label": label,
+        "report_name": report_name,
         "report_dir": str(report_dir),
+        "resumed": resumed,
+        "planned": len(planned),
         "uploaded": len(ids),
         "expected_results": expected,
         "scanned": scanned,
@@ -502,4 +651,101 @@ def run_baseline(
         "no_dd1348_file": str(latest_no),
         "all_results_file": str(latest_all),
         "summary_file": str(latest_summary),
+    }
+
+
+def _write_live_csvs(
+    report_dir: Path,
+    header: list[str],
+    result_rows: list[list[str]],
+    planned: list[str],
+    found: set[str],
+    *,
+    stopped_early: bool,
+) -> None:
+    """Best-effort live update of all-results.csv during a run."""
+    try:
+        path = report_dir / "all-results.csv"
+        with path.open("w", encoding="utf-8", newline="") as f:
+            w = csv.writer(f)
+            w.writerow(header)
+            w.writerows(result_rows)
+            for ident in planned:
+                if ident.upper() not in found:
+                    status = (
+                        "NOT_SCANNED_EARLY_STOP"
+                        if stopped_early
+                        else "IN_PROGRESS"
+                    )
+                    w.writerow([ident, "unknown", "", status, "", ""])
+    except Exception:
+        pass
+
+
+def _write_final_reports(
+    *,
+    report_dir: Path,
+    label: str,
+    report_name: str,
+    search_by: str,
+    planned: list[str],
+    prior_rows: list[dict[str, str]],
+    new_rows: list[list[str]],
+    expected: int,
+    stopped_early: bool,
+    early_stop_reason: str,
+    resumed: bool,
+) -> dict:
+    counts = recount_from_rows(prior_rows)
+    summary_lines = [
+        "DACS Original DD1348 IRRD report",
+        f"report_name: {report_name}",
+        f"label: {label}",
+        f"resumed: {resumed}",
+        f"search_by: {search_by}",
+        f"planned: {len(planned)}",
+        f"scanned: {counts['scanned']}",
+        f"had_dd1348 (Click to Open): {counts['hits']}",
+        f"no_dd1348 (Unavailable): {counts['unavailable']}",
+        f"errors_or_unclear: {counts['errors']}",
+        f"stopped_early: {stopped_early}",
+        f"early_stop_reason: {early_stop_reason or '(none)'}",
+        f"report_dir: {report_dir}",
+    ]
+    summary_text = "\n".join(summary_lines)
+    latest_summary = safe_write_text(report_dir / "summary.txt", summary_text + "\n")
+    save_state(
+        report_dir,
+        {
+            "report_name": report_name,
+            "label": label,
+            "planned_identifiers": planned,
+            "stopped_early": False,
+            "early_stop_reason": "",
+            "resumed": resumed,
+            "updated_at": datetime.now().isoformat(timespec="seconds"),
+            **counts,
+        },
+    )
+    print(summary_text)
+    return {
+        "label": label,
+        "report_name": report_name,
+        "report_dir": str(report_dir),
+        "resumed": resumed,
+        "planned": len(planned),
+        "uploaded": 0,
+        "expected_results": expected,
+        "scanned": counts["scanned"],
+        "hits": counts["hits"],
+        "unavailable": counts["unavailable"],
+        "errors": counts["errors"],
+        "not_in_results": 0,
+        "hit_rate": (counts["hits"] / counts["scanned"]) if counts["scanned"] else 0.0,
+        "stopped_early": False,
+        "early_stop_reason": "",
+        "summary_file": str(latest_summary),
+        "all_results_file": str(report_dir / "all-results.csv"),
+        "had_dd1348_file": str(report_dir / "had-dd1348.csv"),
+        "no_dd1348_file": str(report_dir / "no-dd1348.csv"),
     }

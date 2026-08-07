@@ -165,6 +165,9 @@ class App(tk.Tk):
         grid.pack(fill="x")
 
         self.label_var = tk.StringVar(value=str(self.settings.get("default_label", "before")))
+        self.report_name_var = tk.StringVar(value="")
+        self.resume_var = tk.BooleanVar(value=False)
+        self.resume_path_var = tk.StringVar(value="")
         self.input_var = tk.StringVar(
             value=str(Path(self.settings["input_dir"]) / "identifiers-full-462.txt")
         )
@@ -179,7 +182,9 @@ class App(tk.Tk):
         self.pick_var = tk.BooleanVar(value=True)
 
         rows = [
-            ("Run label", self.label_var, None),
+            ("Run label (before/after)", self.label_var, None),
+            ("Report name (blank = timestamp)", self.report_name_var, None),
+            ("Resume report folder/name", self.resume_path_var, self._browse_resume),
             ("Input file", self.input_var, self._browse_input),
             ("Lines to run (e.g. 5-8 or 1,3,10)", self.lines_var, None),
             ("Skip lines (e.g. 2,4)", self.skip_var, None),
@@ -201,7 +206,12 @@ class App(tk.Tk):
 
         ttk.Checkbutton(
             frm, text="Open file picker before scan", variable=self.pick_var
-        ).pack(anchor="w", pady=6)
+        ).pack(anchor="w", pady=2)
+        ttk.Checkbutton(
+            frm,
+            text="Resume early-stopped test (updates that report)",
+            variable=self.resume_var,
+        ).pack(anchor="w", pady=2)
 
         btns = ttk.Frame(frm)
         btns.pack(fill="x", pady=8)
@@ -226,6 +236,16 @@ class App(tk.Tk):
         )
         if path:
             self.input_var.set(path)
+            self.pick_var.set(False)
+
+    def _browse_resume(self) -> None:
+        initial = self.settings.get("reports_dir") or str(
+            self.root_dir / "reports" / "dd1348-irrd"
+        )
+        path = filedialog.askdirectory(initialdir=initial, parent=self)
+        if path:
+            self.resume_path_var.set(path)
+            self.resume_var.set(True)
             self.pick_var.set(False)
 
     def _reopen_setup(self) -> None:
@@ -278,7 +298,17 @@ class App(tk.Tk):
             "--navigation-timeout-seconds",
             str(self.settings.get("navigation_timeout_seconds", 300)),
         ]
-        if self.pick_var.get():
+        report_name = self.report_name_var.get().strip()
+        if report_name and not self.resume_var.get():
+            args.extend(["--report-name", report_name])
+        if self.resume_var.get():
+            resume_target = self.resume_path_var.get().strip()
+            if resume_target:
+                args.extend(["--resume", resume_target])
+            else:
+                args.append("--resume")
+            args.append("--no-pick-input")
+        elif self.pick_var.get():
             args.append("--pick-input")
         else:
             args.extend(["--no-pick-input", "--input", self.input_var.get().strip()])

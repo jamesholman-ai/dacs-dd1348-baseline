@@ -81,6 +81,40 @@ python -m dacs_baseline scan --label before --details-tab-timeout-seconds 300
 Default is **300 seconds (5 minutes)**. Change it in first-run setup as
 **Details tab populate wait**, or in `config.yaml` / `user-settings.json`.
 
+## Report naming
+
+Reports go under `reports/dd1348-irrd/<report-name>/`.
+
+```powershell
+# Named report
+python -m dacs_baseline scan --label before --report-name before-deploy-1
+
+# No name → timestamp folder, e.g. 20260807_111530
+python -m dacs_baseline scan --label before
+```
+
+`--label` is still stored in `summary.txt` (before/after). The folder name is
+`--report-name` or a timestamp.
+
+## Resume early-stopped runs
+
+If a run stops early (mid-run CAC, etc.), partial results are saved with
+`run-state.json`. Resume and **update that same report**:
+
+```powershell
+# Latest early-stopped report
+python -m dacs_baseline scan --resume
+.\Run-Scan.ps1 -Resume auto
+
+# Specific report name or folder
+python -m dacs_baseline scan --resume before-deploy-1
+python -m dacs_baseline scan --resume "reports\dd1348-irrd\20260807_111530"
+.\Run-Scan.ps1 -Resume before-deploy-1
+```
+
+Already-scanned IDs are skipped; new results are merged into the same
+`all-results.csv` / `had-dd1348.csv` / `no-dd1348.csv` / `summary.txt`.
+
 ## Locked report files
 
 If Excel has `had-dd1348.csv` / `no-dd1348.csv` open, the tool writes

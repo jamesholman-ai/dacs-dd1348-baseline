@@ -9,6 +9,8 @@ param(
   [int]$Max = 0,
   [string]$Lines = '',
   [string]$SkipLines = '',
+  [string]$ReportName = '',
+  [string]$Resume = '',
   [switch]$NoPick,
   [switch]$Sample10,
   [switch]$Gui
@@ -61,6 +63,18 @@ if ($Sample10 -or $Label -eq 'smoke') {
 if ($Max -gt 0) { $argsList += @('--max', "$Max") }
 if ($Lines) { $argsList += @('--lines', $Lines) }
 if ($SkipLines) { $argsList += @('--skip-lines', $SkipLines) }
+if ($ReportName) { $argsList += @('--report-name', $ReportName) }
+if ($Resume -ne '') {
+  if ($Resume -eq 'auto' -or $Resume -eq 'latest') {
+    $argsList += @('--resume')
+  } else {
+    $argsList += @('--resume', $Resume)
+  }
+  # Resume uses run-state; skip picker
+  if ($argsList -notcontains '--no-pick-input') {
+    $argsList += @('--no-pick-input')
+  }
+}
 
 Write-Host "Running: python $($argsList -join ' ')"
 & .\.venv\Scripts\python.exe @argsList

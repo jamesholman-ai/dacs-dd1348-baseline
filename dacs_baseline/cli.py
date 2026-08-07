@@ -87,7 +87,26 @@ def build_parser() -> argparse.ArgumentParser:
     scan.add_argument(
         "--label",
         default="baseline",
-        help="Run label used in output filenames (e.g. before, after)",
+        help="Run type tag stored in the summary (e.g. before, after)",
+    )
+    scan.add_argument(
+        "--report-name",
+        default=None,
+        help=(
+            "Name for this report folder under --out-dir. "
+            "If omitted, a timestamp folder is created (YYYYMMDD_HHMMSS)."
+        ),
+    )
+    scan.add_argument(
+        "--resume",
+        nargs="?",
+        const="__AUTO__",
+        default=None,
+        help=(
+            "Resume an early-stopped test and update that same report. "
+            "Optional value: report folder path or name under --out-dir. "
+            "With no value, resumes the latest early-stopped report."
+        ),
     )
     scan.add_argument(
         "--search-by",
@@ -135,7 +154,7 @@ def build_parser() -> argparse.ArgumentParser:
         "--out-dir",
         type=Path,
         default=Path("reports") / "dd1348-irrd",
-        help="Report folder (default: reports/dd1348-irrd/<label>/)",
+        help="Report root folder (default: reports/dd1348-irrd/<report-name>/)",
     )
     scan.add_argument(
         "--user-data-dir",
@@ -261,8 +280,63 @@ def cmd_compare(args: argparse.Namespace) -> int:
 
 
 def cmd_scan(args: argparse.Namespace, cfg: dict) -> int:
-    src = _resolve_src(args, cfg)
+    from .run_state import find_resumable_report, load_state
+    from .spreadsheet import ShipmentRow
+
     user = load_settings()
+    out_dir = args.out_dir
+    if str(out_dir) == str(Path("reports") / "dd1348-irrd") and user.get("reports_dir"):
+        out_dir = Path(user["reports_dir"])
+
+    resume_from = getattr(args, "resume", None)
+    src: Path | None = None
+    rows: list = []
+    before_count = 0
+
+    if resume_from is not None:
+        # Resume: prefer planned IDs from run-state; optional input only for extras
+        try:
+            report_dir = find_resumable_report(out_dir, resume_from)
+        except FileNotFoundError as exc:
+            raise SystemExit(str(exc)) from exc
+        state = load_state(report_dir) or {}
+        planned = [str(x) for x in (state.get("planned_identifiers") or [])]
+        if planned:
+            rows = [ShipmentRow(i, None, "TCN", n) for n, i in enumerate(planned, 1)]
+            before_count = len(rows)
+            src = report_dir / "list-search-upload.txt"
+            print(f"[resume] Loaded {len(rows)} planned IDs from {report_dir}")
+        else:
+            # Fall back to input file
+            args.no_pick_input = True
+            src = _resolve_src(args, cfg)
+            rows = load_identifiers(src, unique=True)
+            before_count = len(rows)
+    else:
+        src = _resolve_src(args, cfg)
+        keep_file_order = bool(args.lines or args.skip_lines)
+        rows = load_identifiers(src, unique=not keep_file_order)
+        before_count = len(rows)
+        rows = apply_line_filters(
+            rows,
+            start_index=args.start_index or 0,
+            max_count=args.max,
+            lines=args.lines,
+            skip_lines=args.skip_lines,
+        )
+        if keep_file_order:
+            seen: set[str] = set()
+            deduped = []
+            for r in rows:
+                key = r.identifier.upper()
+                if key in seen:
+                    continue
+                seen.add(key)
+                deduped.append(r)
+            rows = deduped
+
+    if not rows:
+        raise SystemExit("No identifiers to scan after line filters")
 
     efts_url = (
         args.efts_url
@@ -274,9 +348,6 @@ def cmd_scan(args: argparse.Namespace, cfg: dict) -> int:
         cfg.get("user_data_dir") or user.get("user_data_dir") or "user-data"
     )
     search_override = args.search_by or cfg.get("search_by") or user.get("search_by") or "tcn"
-    out_dir = args.out_dir
-    if str(out_dir) == str(Path("reports") / "dd1348-irrd") and user.get("reports_dir"):
-        out_dir = Path(user["reports_dir"])
 
     delay = (
         args.delay_seconds
@@ -329,39 +400,21 @@ def cmd_scan(args: argparse.Namespace, cfg: dict) -> int:
         )
     ) * 1000
 
-    # Keep file line numbers meaningful when --lines / --skip-lines are used
-    keep_file_order = bool(args.lines or args.skip_lines)
-    rows = load_identifiers(src, unique=not keep_file_order)
-    before_count = len(rows)
-    rows = apply_line_filters(
-        rows,
-        start_index=args.start_index or 0,
-        max_count=args.max,
-        lines=args.lines,
-        skip_lines=args.skip_lines,
-    )
-    if keep_file_order:
-        # Dedupe after line selection so "line 5" matches the file
-        seen: set[str] = set()
-        deduped = []
-        for r in rows:
-            key = r.identifier.upper()
-            if key in seen:
-                continue
-            seen.add(key)
-            deduped.append(r)
-        rows = deduped
-    if not rows:
-        raise SystemExit("No identifiers to scan after line filters")
-
     search_by = infer_search_by(rows, search_override)
     throttle = Throttle(delay, batch_size, batch_pause)
 
+    report_name = getattr(args, "report_name", None)
     print(f"Input: {src}")
     print(
         f"Identifiers: {len(rows)} (from {before_count} loaded) | "
         f"search-by: {search_by} | label: {args.label}"
     )
+    if report_name:
+        print(f"Report name: {report_name}")
+    else:
+        print("Report name: (timestamp will be used)")
+    if resume_from is not None:
+        print(f"Resume: {resume_from}")
     if args.lines:
         print(f"Lines include: {args.lines}")
     if args.skip_lines:
@@ -416,6 +469,8 @@ def cmd_scan(args: argparse.Namespace, cfg: dict) -> int:
             throttle=throttle,
             list_search_wait_seconds=wait_sec,
             label=args.label,
+            report_name=report_name,
+            resume_from=resume_from,
             midrun_cac_timeout_seconds=midrun_cac,
             details_tab_timeout_seconds=details_tab_timeout,
         )
