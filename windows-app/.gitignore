@@ -1,0 +1,12 @@
+.venv/
+build/
+dist/
+*.spec
+*.zip
+app/user-settings.json
+app/user-data/
+app/reports/dd1348-irrd/**
+!app/reports/dd1348-irrd/README.md
+__pycache__/
+*.py[cod]
+_keep_*.py

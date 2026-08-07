@@ -1,0 +1,3 @@
+DACS DD1348 Baseline — Windows App package source
+Copied from repo root for packaging. Do not edit repo-root files from here;
+re-run Sync-From-Repo.ps1 to refresh.
