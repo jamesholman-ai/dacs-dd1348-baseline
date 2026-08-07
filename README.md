@@ -115,7 +115,14 @@ python -m dacs_baseline scan --resume "reports\dd1348-irrd\20260807_111530"
 Already-scanned IDs are skipped; new results are merged into the same
 `all-results.csv` / `had-dd1348.csv` / `no-dd1348.csv` / `summary.txt`.
 
-## Locked report files
+## Failure screenshots
+
+On any scan failure (Details tab not detected, IRRD unclear, EFTS error page,
+exceptions), PNGs of open browser tabs are saved under:
+
+`reports/dd1348-irrd/<report>/failure-screenshots/`
+
+The CSV `detail` field also includes `screenshot=...` paths.
 
 If Excel has `had-dd1348.csv` / `no-dd1348.csv` open, the tool writes
 `*_OPEN_ME_*.csv` instead of crashing with `PermissionError`. Close Excel and

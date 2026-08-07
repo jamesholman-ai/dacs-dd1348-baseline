@@ -295,49 +295,75 @@ def collect_shipment_identifiers(page: Page) -> list[str]:
 
 
 def click_shipment_identifier(page: Page, identifier: str) -> None:
-    """Click result row; force target=_blank so List Search stays open."""
+    """
+    Click the List Search result link once (force target=_blank).
+    Prefers a Playwright locator click over JS so expect_page can see it.
+    """
     page.locator("#resultsTable").wait_for(state="attached", timeout=30_000)
-    result = page.evaluate(
-        """(id) => {
-        const table = document.getElementById('resultsTable');
-        if (!table) return 'NO_TABLE';
-        const anchors = table.querySelectorAll('a[href*="Details"]');
-        for (const a of anchors) {
-          const text = (a.innerText || a.textContent || '').trim();
-          if (text === id) {
-            a.setAttribute('target', '_blank');
-            a.setAttribute('rel', 'noopener noreferrer');
-            a.scrollIntoView({block: 'center', inline: 'nearest'});
-            a.click();
-            return 'CLICKED';
-          }
-        }
-        // Prefix match (list may show shorter form than Details title)
-        const upper = id.toUpperCase();
-        for (const a of anchors) {
-          const text = (a.innerText || a.textContent || '').trim().toUpperCase();
-          if (text.startsWith(upper) || upper.startsWith(text)) {
-            a.setAttribute('target', '_blank');
-            a.setAttribute('rel', 'noopener noreferrer');
-            a.scrollIntoView({block: 'center', inline: 'nearest'});
-            a.click();
-            return 'CLICKED_PREFIX';
-          }
-        }
-        return 'NOT_FOUND';
-    }""",
-        identifier,
-    )
-    if not str(result).startswith("CLICKED"):
-        link = page.locator(
-            f"#resultsTable a[href*='Details']:text-is('{identifier}')"
-        ).first
-        if link.count() == 0:
-            raise RuntimeError(f"Shipment Identifier link not found: {identifier}")
-        page.evaluate(
-            """(el) => { el.setAttribute('target','_blank'); el.click(); }""",
-            link.element_handle(),
+    page.bring_to_front()
+
+    # Exact text match first
+    link = page.locator(
+        f"#resultsTable a[href*='Details']:text-is('{identifier}')"
+    ).first
+    if link.count() == 0:
+        # Case-insensitive / contains fallback via JS find, then locator by href
+        href = page.evaluate(
+            """(id) => {
+            const table = document.getElementById('resultsTable');
+            if (!table) return '';
+            const anchors = Array.from(table.querySelectorAll('a[href*="Details"]'));
+            const upper = String(id).toUpperCase();
+            for (const a of anchors) {
+              const text = (a.innerText || a.textContent || '').trim();
+              if (text === id) return a.getAttribute('href') || '';
+            }
+            for (const a of anchors) {
+              const text = (a.innerText || a.textContent || '').trim().toUpperCase();
+              if (text.startsWith(upper) || upper.startsWith(text)) {
+                return a.getAttribute('href') || '';
+              }
+            }
+            return '';
+        }""",
+            identifier,
         )
+        if not href:
+            raise RuntimeError(f"Shipment Identifier link not found: {identifier}")
+        link = page.locator(f"#resultsTable a[href='{href}']").first
+        if link.count() == 0:
+            link = page.locator(f"#resultsTable a[href=\"{href}\"]").first
+
+    link.scroll_into_view_if_needed()
+    link.evaluate(
+        """(el) => {
+        el.setAttribute('target', '_blank');
+        el.setAttribute('rel', 'noopener noreferrer');
+    }"""
+    )
+    # Single click only — do not also fire a JS click
+    link.click(timeout=30_000)
+
+
+def find_details_page(
+    context: BrowserContext,
+    list_page: Page | None = None,
+) -> Page | None:
+    """Return an open Details tab if one exists (not the List Search page)."""
+    for p in list(context.pages):
+        try:
+            if p.is_closed():
+                continue
+            if list_page is not None and p == list_page:
+                continue
+            if is_details_page(p):
+                return p
+            url = (p.url or "").lower()
+            if "details" in url and "listsearch" not in url:
+                return p
+        except Exception:
+            continue
+    return None
 
 
 def is_list_search_results(page: Page) -> bool:
@@ -355,7 +381,18 @@ def is_list_search_results(page: Page) -> bool:
 def is_details_page(page: Page) -> bool:
     try:
         url = (page.url or "").lower()
-        return "details" in url and "listsearch" not in url
+        if "listsearch" in url:
+            return False
+        if "details" in url:
+            return True
+        # Title / body cues when URL is slow to update
+        try:
+            title = (page.title() or "").upper()
+            if "DETAILS" in title and "LIST SEARCH" not in title:
+                return True
+        except Exception:
+            pass
+        return False
     except Exception:
         return False
 

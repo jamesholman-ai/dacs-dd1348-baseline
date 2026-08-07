@@ -12,6 +12,8 @@ STATE_NAME = "run-state.json"
 SKIP_STATUSES = {
     "NOT_SCANNED_EARLY_STOP",
     "IN_PROGRESS",
+    "TCN_NOT_FOUND_IN_LIST_SEARCH",
+    "NOT_IN_LIST_SEARCH_RESULTS",  # legacy
     "",
 }
 
@@ -84,7 +86,12 @@ def recount_from_rows(rows: list[dict[str, str]]) -> dict[str, int]:
     for row in rows:
         status = (row.get("status") or "").strip()
         has = (row.get("has_original_dd1348") or "").strip().lower()
-        if status in SKIP_STATUSES or status.upper() == "NOT_SCANNED_EARLY_STOP":
+        if status in SKIP_STATUSES or status.upper() in {
+            "NOT_SCANNED_EARLY_STOP",
+            "IN_PROGRESS",
+            "TCN_NOT_FOUND_IN_LIST_SEARCH",
+            "NOT_IN_LIST_SEARCH_RESULTS",
+        }:
             continue
         if status == "NOT_IN_LIST_SEARCH_RESULTS":
             continue

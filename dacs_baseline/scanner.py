@@ -21,6 +21,7 @@ from .run_state import (
     resolve_report_name,
     save_state,
 )
+from .screenshots import capture_failure_screenshots, screenshot_note
 from .spreadsheet import ShipmentRow, write_upload_txt
 from .throttle import Throttle
 
@@ -57,42 +58,69 @@ def scan_one(
     efts_base: str,
     *,
     details_tab_timeout_ms: int = 300_000,
+    report_dir: Path | None = None,
 ) -> tuple[ScanResult, Page]:
     """
-    Click result (opens Details in a new tab) → wait until that tab is up and
-    Document Center / Original DD1348 IRRD is populated → classify → close tab →
-    return to List Search.
+    Click result once → switch to the new Details tab → wait until populated →
+    classify → close tab → return to List Search.
     """
     list_page = efts.return_to_list_search(context, list_page, efts_base)
-    before = set(context.pages)
     same_tab = False
     details: Page | None = None
+    shot_dir = report_dir
+
+    def _fail(status: str, detail: str, url: str = "", ui: str = "") -> tuple[ScanResult, Page]:
+        paths: list[Path] = []
+        if shot_dir is not None:
+            paths = capture_failure_screenshots(
+                context,
+                shot_dir,
+                identifier=identifier,
+                reason=status or detail,
+            )
+        note = screenshot_note(paths)
+        try:
+            list_page2 = efts.return_to_list_search(context, list_page, efts_base)
+        except Exception:
+            list_page2 = list_page
+        return (
+            ScanResult(
+                identifier,
+                status,
+                _csv_safe(detail) + note,
+                url,
+                "unknown",
+                ui,
+            ),
+            list_page2,
+        )
 
     try:
         details, same_tab, list_page = _open_details_tab(
             list_page,
             context,
             identifier,
-            before,
             efts_base=efts_base,
             timeout_ms=details_tab_timeout_ms,
         )
         if details is None:
-            list_page = efts.return_to_list_search(context, list_page, efts_base)
-            return (
-                ScanResult(
-                    identifier,
+            # One more sweep — tabs may exist even if expect_page timed out
+            details = efts.find_details_page(context, list_page)
+            if details is not None:
+                same_tab = details == list_page
+                print(f"[scan] Found Details tab via page scan for {identifier}")
+            else:
+                return _fail(
                     "error",
-                    "Details tab did not open",
-                    "",
-                    "unknown",
-                    "",
-                ),
-                list_page,
-            )
+                    "Details tab did not open (click ran once; no Details tab detected)",
+                )
 
-        # Continue work on the Details tab that just opened
-        details.bring_to_front()
+        # Switch to the Details tab and wait for it
+        try:
+            details.bring_to_front()
+        except Exception:
+            pass
+        print(f"[scan] Switched to Details tab for {identifier}: {details.url}")
         try:
             details.wait_for_load_state("domcontentloaded", timeout=details_tab_timeout_ms)
         except Exception:
@@ -100,9 +128,21 @@ def scan_one(
 
         if efts.is_efts_error_page(details):
             url = details.url or ""
+            paths = []
+            if shot_dir is not None:
+                paths = capture_failure_screenshots(
+                    context, shot_dir, identifier=identifier, reason="EFTS_ERROR_PAGE"
+                )
             list_page = _finish_details(context, list_page, details, same_tab, efts_base)
             return (
-                ScanResult(identifier, "error", "EFTS_ERROR_PAGE", url, "unknown", ""),
+                ScanResult(
+                    identifier,
+                    "error",
+                    "EFTS_ERROR_PAGE" + screenshot_note(paths),
+                    url,
+                    "unknown",
+                    "",
+                ),
                 list_page,
             )
 
@@ -111,18 +151,22 @@ def scan_one(
             f"[scan] waiting for Details tab to populate "
             f"(up to {details_tab_timeout_ms // 1000}s) for {identifier}..."
         )
-        # Wait until Document Center is up AND IRRD shows Click to Open / Unavailable
         irrd = efts.wait_for_irrd_ready(details, timeout_ms=details_tab_timeout_ms)
         ui_label = (irrd.get("label") or "").strip()
         detail = (irrd.get("detail") or "").strip()
 
         if str(detail).startswith("DETAILS_NOT_READY"):
+            paths = []
+            if shot_dir is not None:
+                paths = capture_failure_screenshots(
+                    context, shot_dir, identifier=identifier, reason="DETAILS_NOT_READY"
+                )
             list_page = _finish_details(context, list_page, details, same_tab, efts_base)
             return (
                 ScanResult(
                     identifier,
                     "error",
-                    _csv_safe(detail),
+                    _csv_safe(detail) + screenshot_note(paths),
                     details_url,
                     "unknown",
                     "",
@@ -158,12 +202,17 @@ def scan_one(
                 list_page,
             )
 
+        paths = []
+        if shot_dir is not None:
+            paths = capture_failure_screenshots(
+                context, shot_dir, identifier=identifier, reason="IRRD_UNCLEAR"
+            )
         list_page = _finish_details(context, list_page, details, same_tab, efts_base)
         return (
             ScanResult(
                 identifier,
                 "error",
-                f"IRRD_UNCLEAR: {_csv_safe(detail or ui_label)}",
+                f"IRRD_UNCLEAR: {_csv_safe(detail or ui_label)}" + screenshot_note(paths),
                 details_url,
                 "unknown",
                 ui_label,
@@ -171,14 +220,7 @@ def scan_one(
             list_page,
         )
     except Exception as exc:
-        try:
-            list_page = efts.return_to_list_search(context, list_page, efts_base)
-        except Exception:
-            pass
-        return (
-            ScanResult(identifier, "error", f"ERROR: {exc}", "", "unknown", ""),
-            list_page,
-        )
+        return _fail("error", f"ERROR: {exc}")
 
 
 def _finish_details(
@@ -202,70 +244,76 @@ def _open_details_tab(
     list_page: Page,
     context: BrowserContext,
     identifier: str,
-    before: set[Page],
     *,
     efts_base: str,
     timeout_ms: int,
 ) -> tuple[Page | None, bool, Page]:
     """
-    Click the List Search result and wait until a Details tab (or same-tab
-    Details navigation) appears. Retries the click once if needed.
-    Returns (details_page_or_none, same_tab, list_page).
+    Click the List Search result ONCE and wait for the Details tab.
+    Uses Playwright expect_page so the new tab is detected reliably.
+    Does not retry the click (that was opening duplicate tabs).
     """
     import time
 
-    end = time.time() + timeout_ms / 1000.0
-    pages_before = set(before)
-    clicked = False
-
-    def _try_click() -> None:
-        nonlocal clicked, pages_before, list_page
-        list_page = efts.return_to_list_search(context, list_page, efts_base)
-        pages_before = set(context.pages)
-        efts.click_shipment_identifier(list_page, identifier)
-        clicked = True
-
-    _try_click()
-    retried = False
-    while time.time() < end:
-        details = _wait_new_page(context, pages_before, timeout_ms=2_000)
-        if details is not None:
-            return details, False, list_page
-        # Same-tab navigation fallback
+    list_page = efts.return_to_list_search(context, list_page, efts_base)
+    # Close any stale Details tabs from a previous item before clicking
+    stale = efts.find_details_page(context, list_page)
+    while stale is not None:
         try:
-            if efts.is_details_page(list_page):
-                return list_page, True, list_page
+            if stale != list_page and not stale.is_closed():
+                stale.close()
         except Exception:
-            pass
-        # One retry click mid-wait (gov-cloud sometimes drops the first)
-        remaining = end - time.time()
-        if not retried and remaining > 15 and clicked:
-            print(f"[scan] Details tab not yet open for {identifier}; retrying click...")
-            try:
-                _try_click()
-                retried = True
-            except Exception as exc:
-                print(f"[scan] retry click failed: {exc}")
-        time.sleep(0.25)
-    return None, False, list_page
+            break
+        stale = efts.find_details_page(context, list_page)
+
+    list_page.bring_to_front()
+    pages_before = list(context.pages)
+    before_ids = {id(p) for p in pages_before}
+
+    details: Page | None = None
+    try:
+        with context.expect_page(timeout=min(timeout_ms, 120_000)) as new_page_info:
+            efts.click_shipment_identifier(list_page, identifier)
+        details = new_page_info.value
+        print(f"[scan] New Details tab opened for {identifier}")
+    except Exception as exc:
+        print(f"[scan] expect_page did not catch new tab for {identifier}: {exc}")
+        # Do NOT click again. Poll for a Details tab that already opened.
+        end = time.time() + min(timeout_ms / 1000.0, 60.0)
+        while time.time() < end and details is None:
+            # New page object not in before set
+            for p in context.pages:
+                if id(p) not in before_ids and not p.is_closed():
+                    details = p
+                    break
+            if details is None:
+                details = efts.find_details_page(context, list_page)
+            if details is None and efts.is_details_page(list_page):
+                return list_page, True, list_page
+            if details is not None:
+                break
+            time.sleep(0.25)
+
+    if details is None:
+        return None, False, list_page
+
+    try:
+        details.bring_to_front()
+        details.wait_for_load_state("domcontentloaded", timeout=min(timeout_ms, 120_000))
+    except Exception:
+        pass
+    return details, False, list_page
 
 
-def _wait_new_page(
-    context: BrowserContext, before: set[Page], timeout_ms: int
-) -> Page | None:
-    import time
-
-    end = time.time() + timeout_ms / 1000.0
-    while time.time() < end:
-        for p in context.pages:
-            if p not in before and not p.is_closed():
-                try:
-                    p.wait_for_load_state("domcontentloaded", timeout=60_000)
-                except Exception:
-                    pass
-                return p
-        time.sleep(0.25)
-    return None
+def _related_planned_keys(ident: str, planned: list[str]) -> set[str]:
+    """Mark planned IDs that match a List Search result identifier."""
+    keys = {ident.upper()}
+    u = ident.upper()
+    for p in planned:
+        pu = p.upper()
+        if pu == u or pu.startswith(u) or u.startswith(pu):
+            keys.add(pu)
+    return keys
 
 
 def run_baseline(
@@ -467,7 +515,7 @@ def run_baseline(
                 key = ident.upper()
                 if key in found:
                     continue
-                found.add(key)
+                found.update(_related_planned_keys(ident, planned))
                 try:
                     row, list_page = scan_one(
                         list_page,
@@ -475,10 +523,22 @@ def run_baseline(
                         ident,
                         efts_base,
                         details_tab_timeout_ms=int(details_tab_timeout_seconds * 1000),
+                        report_dir=report_dir,
                     )
                 except Exception as exc:
+                    paths = capture_failure_screenshots(
+                        context,
+                        report_dir,
+                        identifier=ident,
+                        reason="ERROR",
+                    )
                     row = ScanResult(
-                        ident, "error", f"ERROR: {exc}", "", "unknown", ""
+                        ident,
+                        "error",
+                        f"ERROR: {exc}" + screenshot_note(paths),
+                        "",
+                        "unknown",
+                        "",
                     )
                     try:
                         list_page = efts.return_to_list_search(
@@ -557,14 +617,28 @@ def run_baseline(
             for ident in planned:
                 if ident.upper() not in found:
                     not_found += 1
-                    csv_row = [ident, "unknown", "", "NOT_IN_LIST_SEARCH_RESULTS", "", ""]
+                    csv_row = [
+                        ident,
+                        "unknown",
+                        "",
+                        "TCN_NOT_FOUND_IN_LIST_SEARCH",
+                        "TCN not found in List Search results (no matching row after upload/search)",
+                        "",
+                    ]
                     results.writerow(csv_row)
                     new_result_rows.append(csv_row)
         else:
             for ident in planned:
                 if ident.upper() not in found:
                     not_found += 1
-                    csv_row = [ident, "unknown", "", "NOT_SCANNED_EARLY_STOP", "", ""]
+                    csv_row = [
+                        ident,
+                        "unknown",
+                        "",
+                        "NOT_SCANNED_EARLY_STOP",
+                        "Scan stopped early before this TCN was reached",
+                        "",
+                    ]
                     results.writerow(csv_row)
                     new_result_rows.append(csv_row)
 
@@ -604,12 +678,13 @@ def run_baseline(
         f"had_dd1348 (Click to Open): {hit_count}",
         f"no_dd1348 (Unavailable): {unavailable_count}",
         f"errors_or_unclear: {error_count}",
-        f"not_in_results_or_remaining: {not_found}",
+        f"not_found_in_list_search: {not_found}",
         f"hit_rate: {(hit_count / scanned) if scanned else 0.0:.1%}",
         f"stopped_early: {stopped_early}",
         f"early_stop_reason: {early_stop_reason or '(none)'}",
         "",
         f"report_dir: {report_dir}",
+        f"failure_screenshots: {report_dir / 'failure-screenshots'}",
         f"had-dd1348: {latest_had}",
         f"no-dd1348:  {latest_no}",
         f"all-results: {latest_all}",
@@ -672,12 +747,14 @@ def _write_live_csvs(
             w.writerows(result_rows)
             for ident in planned:
                 if ident.upper() not in found:
-                    status = (
-                        "NOT_SCANNED_EARLY_STOP"
-                        if stopped_early
-                        else "IN_PROGRESS"
-                    )
-                    w.writerow([ident, "unknown", "", status, "", ""])
+                    if stopped_early:
+                        status = "NOT_SCANNED_EARLY_STOP"
+                        detail = "Scan stopped early before this TCN was reached"
+                    else:
+                        status = "IN_PROGRESS"
+                        detail = "Scan still running; TCN not reached yet"
+                    w.writerow([ident, "unknown", "", status, detail, ""])
+
     except Exception:
         pass
 
